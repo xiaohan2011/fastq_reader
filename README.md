@@ -1,6 +1,6 @@
 A short script to read fastq files from Nanopore long-read sequencing data. Sort based on length.
 
-Input: fastq file path, optional: fasta file path for reference.
+Input: fastq file path. Optional: fasta file path for reference.
 
 Output: 
   if fastq only: csv file of reads sorted based on length and a histogram.
