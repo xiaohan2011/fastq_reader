@@ -33,9 +33,18 @@ REPORT_FIELDS = (
 
 
 def sample_id(path: Path) -> str:
-    """Read the full leading sample ID; ignore suffixes such as _2-3 or _12-17."""
-    match = re.match(r"\d+", path.name)
-    return match.group() if match else ""
+    """Read a leading ID or RUN_BARCODE_ID; never use digits inside run tokens."""
+    # A leading numeric token: 1183_2-3.fastq.gz or 1108 reference.dna.
+    match = re.match(r"^(\d+)(?=$|[_.\s-])", path.name)
+    if match:
+        return match.group(1)
+    # ONT-style names: 9M53XY_1_1108-G1.fastq. The first token is a
+    # run/flowcell identifier; the second is a barcode; the third is the ID.
+    match = re.match(
+        r"^[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*_(?:\d+|barcode\d+)_(\d+)(?=$|[_.\s-])",
+        path.name, re.IGNORECASE,
+    )
+    return match.group(1) if match else ""
 
 
 def fastq_stem(path: Path) -> str:
@@ -311,7 +320,7 @@ def process_sample(
                 valid = all((output / name).is_file() and (output / name).stat().st_size > 0
                             for name in saved["artifacts"]
                             if name not in (names["igv_session"], names["fasta_index"]))
-                if saved["signature"] == signature and valid:
+                if saved["signature"] == signature and valid and saved["result"].get("sample_id") == identifier:
                     # Upgrade completed older runs without redoing their alignments.
                     if saved["result"]["status"] == "aligned":
                         write_igv_session(output / names["reference_fasta"], output / names["bam"],
@@ -353,7 +362,7 @@ def process_sample(
             if qc_only:
                 row.update(status="qc_only", message="Alignment disabled")
             elif not identifier and reference is None:
-                row.update(status="qc_only_no_sample_id", message="Filename has no leading number; no reference matched")
+                row.update(status="qc_only_no_sample_id", message="Filename has no recognized sample ID; no reference matched")
             elif len(candidates) > 1:
                 row.update(status="ambiguous_reference", message="QC complete; alignment skipped. Matches: " +
                            "; ".join(p.name for p in candidates))

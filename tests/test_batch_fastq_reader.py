@@ -342,6 +342,49 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(matched["combined_igv_session"].eq(str(session)).all())
         self.assertTrue(self.run_batch()["action"].eq("skipped").all())
 
+    def test_sample_id_with_sequencing_run_prefix(self):
+        cases = {
+            "9M53XY_1_1108-G1.fastq": "1108",
+            "9M53XY_2_1108-G2.fastq.gz": "1108",
+            "9M53XY_barcode01_1108-G1.fq.gz": "1108",
+            "9M53XY_1_1108_2-3.fastq": "1108",
+            "9M53XY_1_11080-G1.fastq": "11080",
+            "9M53XY_1_001108-G1.fastq": "001108",
+            "1108 reference.dna": "1108",
+            "1183_12-17.fastq.gz": "1183",
+            "9M53XY.fastq": "",
+            "9M53XY_1.fastq": "",
+            "9M53XY_1_1108A-G1.fastq": "",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(sample_id(Path(name)), expected)
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_run_prefixed_fastqs_match_reference_and_share_igv_session(self):
+        names = ["9M53XY_1_1108-G1.fastq", "9M53XY_2_1108-G2.fastq.gz"]
+        for name in names:
+            self.fastq(name)
+        reference = self.snapgene("1108 plasmid.dna")
+        result = self.run_batch()
+        self.assertTrue(result["sample_id"].eq("1108").all())
+        self.assertTrue(result["reference"].eq(str(reference)).all())
+        self.assertTrue(result["status"].eq("aligned").all())
+        session = self.output / "1108 plasmid_all_reads_igv.xml"
+        resources = ET.parse(session).findall("Resources/Resource")
+        self.assertEqual({r.get("name") for r in resources},
+                         {"9M53XY_1_1108-G1", "9M53XY_2_1108-G2"})
+        self.assertTrue(result["combined_igv_session"].eq(str(session)).all())
+
+    def test_run_prefix_and_barcode_cannot_match_wrong_reference(self):
+        self.fastq("9M53XY_1_1108-G1.fastq")
+        self.fasta("9 flowcell.fa")
+        self.fasta("1 barcode.fa")
+        self.fasta("11080 unrelated.fa")
+        result = self.run_batch()
+        self.assertEqual(result.iloc[0]["sample_id"], "1108")
+        self.assertEqual(result.iloc[0]["status"], "qc_only_missing_reference")
+
 
 if __name__ == "__main__":
     unittest.main()
