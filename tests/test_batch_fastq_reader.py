@@ -345,6 +345,8 @@ class BatchTests(unittest.TestCase):
     def test_sample_id_with_sequencing_run_prefix(self):
         cases = {
             "9M53XY_1_1108-G1.fastq": "1108",
+            "HSYQJH_1_1039-3.fastq": "1039",
+            "HSYQJH_1_1039-3.fastq.gz": "1039",
             "9M53XY_2_1108-G2.fastq.gz": "1108",
             "9M53XY_barcode01_1108-G1.fq.gz": "1108",
             "9M53XY_1_1108_2-3.fastq": "1108",
@@ -384,6 +386,17 @@ class BatchTests(unittest.TestCase):
         result = self.run_batch()
         self.assertEqual(result.iloc[0]["sample_id"], "1108")
         self.assertEqual(result.iloc[0]["status"], "qc_only_missing_reference")
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_1039_numeric_suffix_matches_and_aligns(self):
+        self.fastq("HSYQJH_1_1039-3.fastq")
+        reference = self.snapgene("1039 reference.dna")
+        result = self.run_batch()
+        self.assertEqual(result.iloc[0]["sample_id"], "1039")
+        self.assertEqual(result.iloc[0]["reference"], str(reference))
+        self.assertEqual(result.iloc[0]["status"], "aligned")
+        self.assertTrue(Path(result.iloc[0]["bam"]).is_file())
+        self.assertTrue(Path(result.iloc[0]["igv_session"]).is_file())
 
 
 if __name__ == "__main__":

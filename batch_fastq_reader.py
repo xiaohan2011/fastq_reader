@@ -38,7 +38,8 @@ def sample_id(path: Path) -> str:
     match = re.match(r"^(\d+)(?=$|[_.\s-])", path.name)
     if match:
         return match.group(1)
-    # ONT-style names: 9M53XY_1_1108-G1.fastq. The first token is a
+    # ONT-style names: 9M53XY_1_1108-G1.fastq or HSYQJH_1_1039-3.fastq.
+    # The final suffix may be numeric or alphanumeric. The first token is a
     # run/flowcell identifier; the second is a barcode; the third is the ID.
     match = re.match(
         r"^[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*_(?:\d+|barcode\d+)_(\d+)(?=$|[_.\s-])",
@@ -454,8 +455,12 @@ def run_batch(
             result = dict.fromkeys(REPORT_FIELDS, "")
             result.update(sample_id=sample_id(path), fastq=str(path), action="processed", status="failed",
                           message=f"{type(error).__name__}: {error}")
+        if result["status"] == "qc_only_missing_reference":
+            result["message"] = (f"No matching reference for ID {sample_id(path)} in {reference_dir}; "
+                                 "QC complete. Check REFERENCE_DIR and the reference filename.")
         results.append(result)
-        print(f"[{result['action']}] {path.name}: {result['status']} — {result['message']}")
+        print(f"[{result['action']}] {path.name} (ID {sample_id(path) or 'unrecognized'}): "
+              f"{result['status']} — {result['message']}")
     combined = combined_igv_sessions(output, [row for row in results if row["status"] == "aligned"], overwrite=overwrite)
     for row in results:
         row["combined_igv_session"] = combined.get(row["bam"], "")

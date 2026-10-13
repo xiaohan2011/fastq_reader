@@ -20,6 +20,7 @@ third field in a `RUN_BARCODE_ID` FASTQ filename:
 | `1133.fastq.gz` | `1133 LPPC EE R-T.fa` | Yes |
 | `1132.fastq.gz` | `11320 plasmid.fa` | No |
 | `9M53XY_1_1108-G1.fastq` | `1108 plasmid.dna` | Yes |
+| `HSYQJH_1_1039-3.fastq` | `1039 reference.dna` | Yes |
 
 For `9M53XY_1_1108-G1.fastq`, `9M53XY` is the sequencing-run token, `1` is the
 barcode, and **`1108` is the sample ID**. Numeric or `barcode01`-style barcode
@@ -27,6 +28,8 @@ fields are supported. A sample ID ends at a separator; digits inside an
 alphanumeric run token are not used as IDs. Multiple run/barcode files with ID
 `1108` automatically share its reference and combined IGV session. Output prefixes
 and track labels retain the complete FASTQ stem to distinguish those read files.
+Numeric suffixes such as `-3` and alphanumeric suffixes such as `-G1` are both
+supported and do not form part of the reference ID.
 
 Numbers are compared as written (`001132` and `1132` are different IDs). Every
 FASTQ gets its own outputs, including files sharing a sample ID. Missing
@@ -82,6 +85,12 @@ Install `requirements-notebook.txt` instead of `requirements.txt` if you need
 Jupyter, then open `2_batch_fastq_reader.ipynb` from the repository folder. Set
 `FASTQ_DIR`, `REFERENCE_DIR`, and `OUTPUT_DIR` in the settings cell and run the
 notebook. It calls the same implementation as the command line.
+The processing cell reloads the Python module each time and prints its file path,
+so updated matching code is used without relying on a kernel restart. Download
+both the updated notebook and `batch_fastq_reader.py` into the same repository
+folder. Missing-reference messages show the detected ID and searched folder;
+check `REFERENCE_DIR` if the ID is correct. To rebuild older QC-only results,
+use `OVERWRITE = True` once, then restore it to `False`.
 
 ### Outputs and reruns
 
