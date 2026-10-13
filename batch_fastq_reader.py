@@ -33,7 +33,7 @@ REPORT_FIELDS = (
 
 
 def sample_id(path: Path) -> str:
-    """Match the complete leading digit sequence, never a numeric prefix."""
+    """Read the full leading sample ID; ignore suffixes such as _2-3 or _12-17."""
     match = re.match(r"\d+", path.name)
     return match.group() if match else ""
 
@@ -411,6 +411,23 @@ def run_batch(
         for path in discover(reference_dir, REFERENCE_EXTENSIONS):
             if sample_id(path):
                 references[sample_id(path)].append(path)
+    fastqs_by_id = defaultdict(list)
+    for path in fastqs:
+        fastqs_by_id[sample_id(path)].append(path)
+    # Resolve one reference choice per sample ID, shared by every read file
+    # bearing that ID. Suffix ranges are read-file labels, not reference IDs.
+    candidates_by_id = {}
+    for identifier, read_files in fastqs_by_id.items():
+        if qc_only:
+            candidates = []
+        elif shared_reference is not None:
+            candidates = [shared_reference]
+        else:
+            candidates = references[identifier]
+        candidates_by_id[identifier] = candidates
+        if len(read_files) > 1 and len(candidates) == 1:
+            print(f"[shared reference] ID {identifier or '(no numeric ID)'}: "
+                  f"{len(read_files)} FASTQs → {candidates[0].name}")
     stems = Counter(fastq_stem(path) for path in fastqs)
     # Distinguish same-stem inputs such as 1132.fastq and 1132.fastq.gz.
     prefixes = [fastq_stem(path) if stems[fastq_stem(path)] == 1 else path.name for path in fastqs]
@@ -421,7 +438,7 @@ def run_batch(
     for path, prefix in zip(fastqs, prefixes):
         try:
             result = process_sample(
-                path, ([shared_reference] if shared_reference is not None and not qc_only else references[sample_id(path)]), output, prefix, bin_size=bin_size,
+                path, candidates_by_id[sample_id(path)], output, prefix, bin_size=bin_size,
                 log_y=log_y, threads=threads, overwrite=overwrite, qc_only=qc_only,
             )
         except Exception as error:

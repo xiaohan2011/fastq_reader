@@ -169,6 +169,21 @@ also regenerated. Existing customized sessions are preserved on skipped runs.
 
 ### One shared reference, multiple FASTQs
 
+**Automatic matching is the default:** FASTQs sharing the same complete leading
+ID use the reference with that ID. For example, `1183_2-3.fastq.gz`,
+`1183_4-6.fastq.gz`, `1183_12-17.fastq.gz`, and `1183_19-21.fastq.gz` all use
+`1183 ref.dna` (or an `1183` FASTA). The suffix ranges label read files and are
+ignored when choosing the reference. `11830` is a different ID and will not
+match `1183`. Multiple matching references remain ambiguous.
+
+Put the reference in the FASTQ folder or select its folder with `REFERENCE_DIR` /
+`--reference-dir`. Leave `REFERENCE_FILE = None`; there is no need to select a
+shared file. The batch reports the detected shared-reference groups and creates
+one `1183 ref_all_reads_igv.xml` with four separately labeled BAM tracks, in
+addition to the individual sessions. Multiple sample IDs in one folder are
+grouped independently.
+
+**Optional override for different IDs:**
 Use `--reference-file` to align every FASTQ to a single reference instead of
 matching references by sample ID:
 

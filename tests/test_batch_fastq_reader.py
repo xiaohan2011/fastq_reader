@@ -308,6 +308,40 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(main([str(self.reads), "--output-dir", str(self.output),
                                "--reference-file", str(reference), "--threads", "2"]), 0)
 
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_same_fastq_id_infers_shared_reference_without_reference_file(self):
+        for name in ("1132_run1.fastq", "1132_run2.fastq.gz"):
+            self.fastq(name)
+        reference = self.snapgene("1132 plasmid.dna")
+        result = self.run_batch()
+        self.assertTrue(result["status"].eq("aligned").all())
+        self.assertTrue(result["reference"].eq(str(reference)).all())
+        session = self.output / "1132 plasmid_all_reads_igv.xml"
+        tracks = ET.parse(session).findall("Resources/Resource")
+        self.assertEqual({track.get("name") for track in tracks}, {"1132_run1", "1132_run2"})
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_range_suffixes_automatically_share_1183_reference(self):
+        names = [f"1183_{suffix}.fastq.gz" for suffix in ("2-3", "4-6", "12-17", "19-21")]
+        for name in names:
+            self.fastq(name)
+            self.assertEqual(sample_id(Path(name)), "1183")
+        self.fastq("11830_2-3.fastq.gz")
+        reference = self.snapgene("1183 ref.dna")
+        self.output = self.reads / "results"
+        result = self.run_batch()
+        matched = result[result["sample_id"] == "1183"]
+        self.assertEqual(len(matched), 4)
+        self.assertTrue(matched["status"].eq("aligned").all())
+        self.assertTrue(matched["reference"].eq(str(reference)).all())
+        self.assertEqual(result[result["sample_id"] == "11830"].iloc[0]["status"], "qc_only_missing_reference")
+        session = self.output / "1183 ref_all_reads_igv.xml"
+        resources = ET.parse(session).findall("Resources/Resource")
+        self.assertEqual({track.get("name") for track in resources},
+                         {name.removesuffix(".fastq.gz") for name in names})
+        self.assertTrue(matched["combined_igv_session"].eq(str(session)).all())
+        self.assertTrue(self.run_batch()["action"].eq("skipped").all())
+
 
 if __name__ == "__main__":
     unittest.main()
