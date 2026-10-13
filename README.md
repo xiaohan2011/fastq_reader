@@ -83,9 +83,11 @@ results/
   1132_summary.csv
   1132_length_hist.png
   1132_reference.fasta
+  1132_reference.fasta.fai
   1132_sorted.bam
   1132_sorted.bam.bai
   1132_alignment.log
+  1132_igv.xml
   1133_summary.csv
   1133_length_hist.png
   batch_report.csv
@@ -123,6 +125,78 @@ with status 1 for failures or ambiguous references, 0 for a successful batch
 Like the original notebook, one FASTQ's sequences are held in memory for sorting
 and CSV export. Samples run one at a time; very large individual FASTQs need
 enough RAM for their sequences and dataframe.
+
+Batches also create an **IGV desktop session** for every successfully aligned
+sample. For `1132.fastq.gz`, open `1132_igv.xml` in IGV with **File → Open Session**.
+The session loads the exact generated reference FASTA used for alignment and
+the sorted BAM, with its BAM index. It opens at the first reference sequence.
+There is no need to separately choose a genome, load a BAM, or save an initial
+session. You can adjust the view in IGV and use **File → Save Session** afterward.
+
+### IGV sessions for existing results
+
+To create sessions for BAMs you already generated, without rerunning QC or alignment:
+
+```bash
+python batch_fastq_reader.py "/path/to/fastq_folder" \
+  --output-dir "/path/to/fastq_folder/results" --igv-only
+```
+
+Or in a notebook cell:
+
+```python
+from batch_fastq_reader import create_igv_sessions
+igv_report = create_igv_sessions(OUTPUT_DIR)
+display(igv_report)
+```
+
+This scans the output folder for `*_sorted.bam`, uses each corresponding
+`*_reference.fasta`, checks that the `.bam.bai` exists, creates a FASTA index
+with `samtools faidx` if needed, and writes `*_igv.xml`. `igv_session_report.csv`
+lists successes and failures. Existing nonempty sessions are preserved unless
+`--overwrite` (or `overwrite=True`) is supplied.
+
+Sessions use paths relative to the XML file, so keep the XML, reference FASTA,
+`.fasta.fai`, BAM, and `.bam.bai` together when moving/downloading the results
+folder. IGV must have access to those files on the machine where it runs. Session
+generation does not require IGV to be installed or running and does not click or
+open the desktop application automatically. Missing-reference QC samples do not
+get an IGV session.
+
+Completed older batch outputs are upgraded with sessions on the next matching
+batch run, without rerunning alignment; deleted sessions or FASTA indexes are
+also regenerated. Existing customized sessions are preserved on skipped runs.
+
+### One shared reference, multiple FASTQs
+
+Use `--reference-file` to align every FASTQ to a single reference instead of
+matching references by sample ID:
+
+```bash
+python batch_fastq_reader.py "/path/to/fastq_folder" \
+  --reference-file "/path/to/plasmid.dna" \
+  --output-dir "/path/to/fastq_folder/results"
+```
+
+In the notebook, set `REFERENCE_FILE = Path("/path/to/plasmid.dna")`; FASTA files
+also work. `REFERENCE_FILE` overrides `REFERENCE_DIR` and ID-based matching.
+Each FASTQ still produces its own QC outputs and BAM. The shared reference uses
+the same sequence identifiers across BAMs, including when converted from SnapGene.
+
+The code creates **`plasmid_all_reads_igv.xml`**, containing every BAM aligned to
+that reference as a separately labeled track (`1132`, `1133`, etc.), as well as
+the individual sample sessions. Open the combined session in IGV to compare the
+samples together. Combined sessions are also created when normal folder matching
+maps several FASTQs to an identical generated reference, and by `--igv-only` for
+compatible existing results. References with different sequence IDs/content are
+kept separate so BAMs are not displayed against an incompatible genome.
+
+Combined sessions are regenerated to include the current batch's successful
+alignments on each run. Save customized overview sessions under another filename
+to retain your layout. `combined_igv_session` in the batch/session report points
+to the relevant combined file. If older SnapGene BAMs used differing sample IDs
+as their reference sequence names, rebuild with `--reference-file` and
+`--overwrite` to get compatible contig names before combining them.
 
 ### Validation
 

@@ -7,6 +7,7 @@ import argparse
 from collections import Counter, defaultdict
 import csv
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 
 import matplotlib
 
@@ -26,7 +28,7 @@ REFERENCE_EXTENSIONS = (".fasta", ".fa", ".fna", ".fas", ".dna")
 WORKFLOW_VERSION = 1
 REPORT_FIELDS = (
     "sample_id", "fastq", "reference", "action", "status", "reads",
-    "summary_csv", "histogram_png", "bam", "bai", "alignment_log", "message",
+    "summary_csv", "histogram_png", "bam", "bai", "alignment_log", "igv_session", "combined_igv_session", "message",
 )
 
 
@@ -105,8 +107,10 @@ def prepare_reference(source: Path, destination: Path, identifier: str) -> None:
     if source.suffix.lower() == ".dna":
         with source.open("rb") as handle:
             record = SeqIO.read(handle, "snapgene")
-        record.id = identifier
-        record.name = identifier
+        # Use the reference's name, not the read sample ID: BAMs aligned to one
+        # shared SnapGene reference must have identical contig names in IGV.
+        record.id = re.sub(r"\s+", "_", source.stem)
+        record.name = record.id
         record.description = "sequence extracted from SnapGene"
         records = [record]
     else:
@@ -154,6 +158,121 @@ def fingerprint(path: Path) -> dict:
     return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
+def write_igv_session(reference: Path, bam: Path | list[Path], session: Path, *, overwrite: bool = False) -> Path:
+    """Create an IGV desktop XML session with paths relative to the session file."""
+    bams = [bam] if isinstance(bam, Path) else bam
+    if not bams:
+        raise ValueError("An IGV session needs at least one BAM")
+    for path in [reference, *(p for b in bams for p in (b, Path(str(b) + ".bai")))]:
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Missing or empty IGV input: {path}")
+    fasta_index = Path(str(reference) + ".fai")
+    if not fasta_index.is_file() or fasta_index.stat().st_size == 0:
+        if not shutil.which("samtools"):
+            raise RuntimeError("samtools is required to index the IGV reference FASTA")
+        subprocess.run(["samtools", "faidx", str(reference)], check=True)
+    # Keep sessions users have already customized unless they request overwrite.
+    if session.is_file() and session.stat().st_size > 0 and not overwrite:
+        return session
+    with fasta_index.open() as handle:
+        first_contig = handle.readline().rstrip("\n").split("\t")
+    if len(first_contig) < 2 or int(first_contig[1]) < 1:
+        raise ValueError(f"Invalid FASTA index: {fasta_index}")
+    root = ET.Element("Session", {
+        "genome": Path(os.path.relpath(reference, session.parent)).as_posix(),
+        "locus": f"{first_contig[0]}:1-{first_contig[1]}",
+        "version": "8",
+    })
+    resources = ET.SubElement(root, "Resources")
+    for alignment in bams:
+        ET.SubElement(resources, "Resource", {
+            "path": Path(os.path.relpath(alignment, session.parent)).as_posix(),
+            "name": alignment.name.removesuffix("_sorted.bam"),
+        })
+    ET.indent(root, space="  ")
+    temporary = session.with_name(session.name + ".tmp")
+    ET.ElementTree(root).write(temporary, encoding="utf-8", xml_declaration=True)
+    temporary.replace(session)
+    return session
+
+
+def combined_igv_sessions(output: Path, rows: list[dict], *, overwrite: bool = False) -> dict[str, str]:
+    """Group compatible references and write one session with separate BAM tracks."""
+    groups = defaultdict(list)
+    for row in rows:
+        if not row.get("bam") or not row.get("igv_session"):
+            continue
+        bam = Path(row["bam"])
+        reference = output / (bam.name.removesuffix("_sorted.bam") + "_reference.fasta")
+        with reference.open("rb") as handle:
+            digest = hashlib.sha256()
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        groups[digest.hexdigest()].append((row, reference, bam))
+    sessions = {}
+    labels = Counter()
+    for digest, group in groups.items():
+        if len(group) < 2:
+            continue
+        # Prefer the original reference filename recorded by the batch.
+        label = Path(group[0][0].get("reference") or group[0][1]).stem
+        label = label.removesuffix("_reference")
+        labels[label] += 1
+        if labels[label] > 1:
+            label += "_" + digest[:8]
+        session = output / f"{label}_all_reads_igv.xml"
+        try:
+            # Rebuild the overview as inputs are added/removed; individual
+            # sessions retain user customization unless overwrite is requested.
+            write_igv_session(group[0][1], [entry[2] for entry in group], session, overwrite=True)
+            for row, _, bam in group:
+                sessions[str(bam)] = str(session)
+            print(f"Combined IGV session: {session.name} ({len(group)} BAM tracks)")
+        except Exception as error:
+            # A session export error should be visible without discarding valid alignments.
+            for row, _, _ in group:
+                row["status"] = "failed"
+                row["message"] = f"Combined IGV session failed: {error}"
+    return sessions
+
+
+def create_igv_sessions(output_dir: str | Path, *, overwrite: bool = False) -> pd.DataFrame:
+    """Make sessions from existing batch outputs, without rerunning QC/alignment."""
+    output = Path(output_dir).expanduser().resolve()
+    if not output.is_dir():
+        raise ValueError(f"Results folder does not exist: {output}")
+    bams = sorted(output.glob("*_sorted.bam"))
+    if not bams:
+        raise ValueError(f"No batch *_sorted.bam files found in {output}")
+    results = []
+    for bam in bams:
+        prefix = bam.name[:-len("_sorted.bam")]
+        reference = output / f"{prefix}_reference.fasta"
+        session = output / f"{prefix}_igv.xml"
+        row = {"sample_id": sample_id(bam), "bam": str(bam), "reference": "", "igv_session": "", "status": "failed", "message": ""}
+        marker = output / f".{prefix}_complete.json"
+        if marker.is_file():
+            try:
+                row["reference"] = json.loads(marker.read_text())["result"].get("reference", "")
+            except (ValueError, KeyError, TypeError):
+                pass
+        try:
+            write_igv_session(reference, bam, session, overwrite=overwrite)
+            row.update(status="ready", igv_session=str(session))
+        except Exception as error:
+            row["message"] = f"{type(error).__name__}: {error}"
+        results.append(row)
+        print(f"[{row['status']}] {session.name}" + (f": {row['message']}" if row['message'] else ""))
+    combined = combined_igv_sessions(output, results, overwrite=overwrite)
+    for row in results:
+        row["combined_igv_session"] = combined.get(row["bam"], "")
+    report = pd.DataFrame(results)
+    temporary = output / ".igv_session_report.csv.tmp"
+    report.to_csv(temporary, index=False)
+    temporary.replace(output / "igv_session_report.csv")
+    return report
+
+
 def atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(value, indent=2) + "\n")
@@ -176,6 +295,8 @@ def process_sample(
         "bam": f"{prefix}_sorted.bam",
         "bai": f"{prefix}_sorted.bam.bai",
         "alignment_log": f"{prefix}_alignment.log",
+        "fasta_index": f"{prefix}_reference.fasta.fai",
+        "igv_session": f"{prefix}_igv.xml",
     }
     marker = output / f".{prefix}_complete.json"
     signature = {
@@ -188,9 +309,19 @@ def process_sample(
             try:
                 saved = json.loads(marker.read_text())
                 valid = all((output / name).is_file() and (output / name).stat().st_size > 0
-                            for name in saved["artifacts"])
+                            for name in saved["artifacts"]
+                            if name not in (names["igv_session"], names["fasta_index"]))
                 if saved["signature"] == signature and valid:
-                    return dict(saved["result"], action="skipped")
+                    # Upgrade completed older runs without redoing their alignments.
+                    if saved["result"]["status"] == "aligned":
+                        write_igv_session(output / names["reference_fasta"], output / names["bam"],
+                                          output / names["igv_session"])
+                        saved["result"]["igv_session"] = str(output / names["igv_session"])
+                        for key in ("igv_session", "fasta_index"):
+                            if names[key] not in saved["artifacts"]:
+                                saved["artifacts"].append(names[key])
+                        atomic_json(marker, saved)
+                    return dict(saved["result"], action="skipped", igv_session=saved["result"].get("igv_session", ""))
             except (ValueError, KeyError, TypeError):
                 pass
         if marker.exists() or any((output / name).exists() for name in names.values()):
@@ -221,7 +352,7 @@ def process_sample(
             publish("histogram_png")
             if qc_only:
                 row.update(status="qc_only", message="Alignment disabled")
-            elif not identifier:
+            elif not identifier and reference is None:
                 row.update(status="qc_only_no_sample_id", message="Filename has no leading number; no reference matched")
             elif len(candidates) > 1:
                 row.update(status="ambiguous_reference", message="QC complete; alignment skipped. Matches: " +
@@ -234,7 +365,11 @@ def process_sample(
                       work / names["alignment_log"], threads)
                 for key in ("reference_fasta", "bam", "bai", "alignment_log"):
                     publish(key)
-                row.update(status="aligned", message="QC and alignment complete")
+                write_igv_session(output / names["reference_fasta"], output / names["bam"],
+                                  output / names["igv_session"])
+                row["igv_session"] = str(output / names["igv_session"])
+                artifacts.extend([names["igv_session"], names["fasta_index"]])
+                row.update(status="aligned", message="QC, alignment and IGV session complete")
         except Exception as error:
             row.update(status="failed", message=f"{type(error).__name__}: {error}")
             # Preserve diagnostics and successful QC even when alignment fails.
@@ -248,16 +383,22 @@ def process_sample(
 def run_batch(
     fastq_dir: str | Path, output_dir: str | Path, reference_dir: str | Path | None = None,
     *, overwrite: bool = False, qc_only: bool = False, bin_size: int = 2000,
-    log_y: bool = False, threads: int = 4,
+    log_y: bool = False, threads: int = 4, reference_file: str | Path | None = None,
 ) -> pd.DataFrame:
     """Process all top-level FASTQs; return and save the per-file batch report."""
     fastq_dir = Path(fastq_dir).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     reference_dir = Path(reference_dir).expanduser().resolve() if reference_dir else fastq_dir
+    shared_reference = Path(reference_file).expanduser().resolve() if reference_file else None
     if not fastq_dir.is_dir():
         raise ValueError(f"FASTQ folder does not exist: {fastq_dir}")
-    if not qc_only and not reference_dir.is_dir():
+    if not qc_only and shared_reference is None and not reference_dir.is_dir():
         raise ValueError(f"Reference folder does not exist: {reference_dir}")
+    if not qc_only and shared_reference is not None:
+        if not shared_reference.is_file() or shared_reference.suffix.lower() not in REFERENCE_EXTENSIONS:
+            raise ValueError(f"Shared reference must be a supported FASTA or SnapGene file: {shared_reference}")
+        if output == shared_reference.parent:
+            raise ValueError("Use a separate output folder, not the shared reference folder")
     if output == fastq_dir or (not qc_only and output == reference_dir):
         raise ValueError("Use a separate output folder, not an input/reference folder")
     if bin_size < 1 or threads < 1:
@@ -266,7 +407,7 @@ def run_batch(
     if not fastqs:
         raise ValueError(f"No supported FASTQ files in {fastq_dir} (subfolders are not scanned)")
     references = defaultdict(list)
-    if not qc_only:
+    if not qc_only and shared_reference is None:
         for path in discover(reference_dir, REFERENCE_EXTENSIONS):
             if sample_id(path):
                 references[sample_id(path)].append(path)
@@ -280,7 +421,7 @@ def run_batch(
     for path, prefix in zip(fastqs, prefixes):
         try:
             result = process_sample(
-                path, references[sample_id(path)], output, prefix, bin_size=bin_size,
+                path, ([shared_reference] if shared_reference is not None and not qc_only else references[sample_id(path)]), output, prefix, bin_size=bin_size,
                 log_y=log_y, threads=threads, overwrite=overwrite, qc_only=qc_only,
             )
         except Exception as error:
@@ -289,6 +430,9 @@ def run_batch(
                           message=f"{type(error).__name__}: {error}")
         results.append(result)
         print(f"[{result['action']}] {path.name}: {result['status']} — {result['message']}")
+    combined = combined_igv_sessions(output, [row for row in results if row["status"] == "aligned"], overwrite=overwrite)
+    for row in results:
+        row["combined_igv_session"] = combined.get(row["bam"], "")
     report = pd.DataFrame(results, columns=REPORT_FIELDS)
     temporary_report = output / ".batch_report.csv.tmp"
     report.to_csv(temporary_report, index=False, quoting=csv.QUOTE_MINIMAL)
@@ -299,19 +443,26 @@ def run_batch(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("fastq_dir", type=Path, help="Folder containing FASTQ files; no recursive search")
+    parser.add_argument("fastq_dir", type=Path, help="FASTQ folder; no recursive search (unused with --igv-only)")
     parser.add_argument("--reference-dir", type=Path, help="FASTA/SnapGene folder (default: FASTQ folder)")
+    parser.add_argument("--reference-file", type=Path, help="One shared FASTA/SnapGene reference for every FASTQ; overrides folder matching")
     parser.add_argument("--output-dir", type=Path, required=True, help="Separate folder for all generated files")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild this batch's outputs")
     parser.add_argument("--qc-only", action="store_true", help="Skip reference search and alignment")
+    parser.add_argument("--igv-only", action="store_true", help="Create IGV sessions from existing output BAMs; no QC/alignment")
     parser.add_argument("--bin-size", type=int, default=2000, help="Histogram bin size in bp (default: 2000)")
     parser.add_argument("--log-y", action="store_true", help="Use a logarithmic histogram y axis")
     parser.add_argument("--threads", type=int, default=min(4, os.cpu_count() or 1), help="Alignment threads per sample")
     args = parser.parse_args(argv)
+    if args.igv_only and args.qc_only:
+        parser.error("--igv-only and --qc-only cannot be combined")
     try:
+        if args.igv_only:
+            report = create_igv_sessions(args.output_dir, overwrite=args.overwrite)
+            return int(report["status"].eq("failed").any())
         report = run_batch(args.fastq_dir, args.output_dir, args.reference_dir,
                            overwrite=args.overwrite, qc_only=args.qc_only, bin_size=args.bin_size,
-                           log_y=args.log_y, threads=args.threads)
+                           log_y=args.log_y, threads=args.threads, reference_file=args.reference_file)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return int(report["status"].isin(["failed", "ambiguous_reference"]).any())

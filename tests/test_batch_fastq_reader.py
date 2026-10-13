@@ -1,6 +1,7 @@
 """Functional checks using deterministic FASTQ, FASTA and SnapGene fixtures."""
 
 import gzip
+import json
 import os
 from pathlib import Path
 import random
@@ -9,12 +10,13 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 import pandas as pd
 from PIL import Image
 
-from batch_fastq_reader import main, run_batch, sample_id
+from batch_fastq_reader import create_igv_sessions, main, run_batch, sample_id
 
 
 class BatchTests(unittest.TestCase):
@@ -203,6 +205,11 @@ class BatchTests(unittest.TestCase):
             count = subprocess.check_output(["samtools", "view", "-c", "-F", "4", str(bam)])
             self.assertEqual(int(count), 3)
             self.assertTrue(Path(str(bam) + ".bai").is_file())
+            session = ET.parse(self.output / f"{identifier}_igv.xml").getroot()
+            self.assertEqual(session.tag, "Session")
+            self.assertEqual(session.get("genome"), f"{identifier}_reference.fasta")
+            self.assertEqual(session.find("Resources/Resource").get("path"), bam.name)
+            self.assertTrue((self.output / f"{identifier}_reference.fasta.fai").is_file())
         converted = (self.output / "1133_reference.fasta").read_text()
         self.assertEqual("".join(converted.splitlines()[1:]), self.sequence)
         self.assertTrue(self.run_batch()["action"].eq("skipped").all())
@@ -210,7 +217,96 @@ class BatchTests(unittest.TestCase):
         rerun = self.run_batch(overwrite=True, qc_only=True)
         self.assertTrue(rerun["status"].eq("qc_only").all())
         self.assertFalse((self.output / "1132_sorted.bam").exists())
+        self.assertFalse((self.output / "1132_igv.xml").exists())
+        self.assertFalse((self.output / "1132_reference.fasta.fai").exists())
         self.assertEqual((self.output / "unrelated.txt").read_text(), "keep me")
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_igv_sessions_upgrade_old_results_and_move_with_folder(self):
+        self.fastq("1132 & sample.fastq")
+        self.fasta("1132 reference.fa")
+        self.run_batch()
+        bam = self.output / "1132 & sample_sorted.bam"
+        before = bam.stat().st_mtime_ns
+        session = self.output / "1132 & sample_igv.xml"
+        marker = self.output / ".1132 & sample_complete.json"
+        old = json.loads(marker.read_text())
+        old["artifacts"] = [name for name in old["artifacts"] if not name.endswith(("_igv.xml", ".fai"))]
+        old["result"].pop("igv_session")
+        marker.write_text(json.dumps(old))
+        session.unlink()
+        (self.output / "1132 & sample_reference.fasta.fai").unlink()
+        self.assertEqual(self.run_batch().iloc[0]["action"], "skipped")
+        self.assertEqual(bam.stat().st_mtime_ns, before)
+        self.assertTrue(session.is_file())
+        self.assertIn("igv_session", json.loads(marker.read_text())["result"])
+        moved = self.root / "moved results"
+        shutil.move(self.output, moved)
+        root = ET.parse(moved / session.name).getroot()
+        self.assertTrue((moved / root.get("genome")).is_file())
+        self.assertTrue((moved / root.find("Resources/Resource").get("path")).is_file())
+        (moved / session.name).unlink()
+        report = create_igv_sessions(moved)
+        self.assertEqual(report.iloc[0]["status"], "ready")
+        self.assertEqual((moved / bam.name).stat().st_mtime_ns, before)
+        saved = (moved / session.name).read_bytes()
+        self.assertEqual(create_igv_sessions(moved).iloc[0]["status"], "ready")
+        self.assertEqual((moved / session.name).read_bytes(), saved)
+        self.assertTrue((moved / "igv_session_report.csv").is_file())
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_igv_only_continues_after_missing_index_and_cli(self):
+        for identifier in ("1132", "1133"):
+            self.fastq(identifier + ".fastq")
+            self.fasta(identifier + ".fa")
+        self.run_batch()
+        for identifier in ("1132", "1133"):
+            (self.output / f"{identifier}_igv.xml").unlink()
+        (self.output / "1132_sorted.bam.bai").unlink()
+        result = create_igv_sessions(self.output)
+        self.assertEqual(result["status"].tolist(), ["failed", "ready"])
+        self.assertFalse((self.output / "1132_igv.xml").exists())
+        self.assertEqual(main([str(self.reads), "--output-dir", str(self.output), "--igv-only"]), 1)
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_shared_snapgene_reference_combines_all_reads(self):
+        self.output = self.reads / "results"
+        for name in ("1132.fastq.gz", "1133.fastq", "replicate.fq"):
+            self.fastq(name)
+        reference = self.snapgene("shared plasmid & construct.dna")
+        result = self.run_batch(reference_file=reference)
+        self.assertTrue(result["status"].eq("aligned").all())
+        session = self.output / "shared plasmid & construct_all_reads_igv.xml"
+        self.assertTrue(result["combined_igv_session"].eq(str(session)).all())
+        root = ET.parse(session).getroot()
+        tracks = root.findall("Resources/Resource")
+        self.assertEqual(len(tracks), 3)
+        self.assertEqual({track.get("name") for track in tracks}, {"1132", "1133", "replicate"})
+        reference_path = self.output / root.get("genome")
+        self.assertTrue(reference_path.is_file())
+        for track in tracks:
+            bam = self.output / track.get("path")
+            header = subprocess.check_output(["samtools", "view", "-H", str(bam)], text=True)
+            self.assertIn("SN:shared_plasmid_&_construct", header)
+        before = {path.name: path.stat().st_mtime_ns for path in self.output.glob("*_sorted.bam")}
+        self.assertTrue(self.run_batch(reference_file=reference)["action"].eq("skipped").all())
+        self.assertEqual(before, {path.name: path.stat().st_mtime_ns for path in self.output.glob("*_sorted.bam")})
+        session.unlink()
+        self.assertTrue(create_igv_sessions(self.output)["combined_igv_session"].eq(str(session)).all())
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_shared_fasta_combined_session_includes_new_fastq(self):
+        reference = self.fasta("shared.fa")
+        for name in ("1132.fastq", "1133.fastq"):
+            self.fastq(name)
+        self.run_batch(reference_file=reference)
+        session = self.output / "shared_all_reads_igv.xml"
+        self.assertEqual(len(ET.parse(session).findall("Resources/Resource")), 2)
+        self.fastq("1134.fastq")
+        self.run_batch(reference_file=reference)
+        self.assertEqual(len(ET.parse(session).findall("Resources/Resource")), 3)
+        self.assertEqual(main([str(self.reads), "--output-dir", str(self.output),
+                               "--reference-file", str(reference), "--threads", "2"]), 0)
 
 
 if __name__ == "__main__":
