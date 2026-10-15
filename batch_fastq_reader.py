@@ -26,6 +26,7 @@ import pandas as pd
 FASTQ_EXTENSIONS = (".fastq.gz", ".fq.gz", ".fastq", ".fq")
 REFERENCE_EXTENSIONS = (".fasta", ".fa", ".fna", ".fas", ".dna")
 WORKFLOW_VERSION = 1
+ID_PARSER_VERSION = "plasmidsaurus-v2"
 REPORT_FIELDS = (
     "sample_id", "fastq", "reference", "action", "status", "reads",
     "summary_csv", "histogram_png", "bam", "bai", "alignment_log", "igv_session", "combined_igv_session", "message",
@@ -33,18 +34,19 @@ REPORT_FIELDS = (
 
 
 def sample_id(path: Path) -> str:
-    """Read a leading ID or RUN_BARCODE_ID; never use digits inside run tokens."""
+    """Read a leading plasmid ID or ORDER_SAMPLE_PLASMID Plasmidsaurus name."""
+    # Split the vendor fields explicitly. Hyphenated labels after the plasmid
+    # ID (e.g. 1147-F2-2) never change that ID. Require a letter in the order
+    # token so ordinary numeric filenames like 1183_2_3 retain their leading ID.
+    fields = path.name.split("_", 2)
+    if (len(fields) == 3
+            and re.fullmatch(r"[A-Za-z0-9-]+", fields[0])
+            and re.search(r"[A-Za-z]", fields[0])
+            and re.fullmatch(r"(?:barcode)?\d+", fields[1], re.IGNORECASE)):
+        plasmid = re.match(r"^(\d+)(?=$|[_.\s-])", fields[2])
+        return plasmid.group(1) if plasmid else ""
     # A leading numeric token: 1183_2-3.fastq.gz or 1108 reference.dna.
     match = re.match(r"^(\d+)(?=$|[_.\s-])", path.name)
-    if match:
-        return match.group(1)
-    # ONT-style names: 9M53XY_1_1108-G1.fastq or HSYQJH_1_1039-3.fastq.
-    # The final suffix may be numeric or alphanumeric. The first token is a
-    # run/flowcell identifier; the second is a barcode; the third is the ID.
-    match = re.match(
-        r"^[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*_(?:\d+|barcode\d+)_(\d+)(?=$|[_.\s-])",
-        path.name, re.IGNORECASE,
-    )
     return match.group(1) if match else ""
 
 
@@ -444,6 +446,7 @@ def run_batch(
     if len(set(prefixes)) != len(prefixes):
         raise ValueError("FASTQ filenames cause output name collisions; rename the conflicting inputs")
     output.mkdir(parents=True, exist_ok=True)
+    print(f"Sample ID parser: {ID_PARSER_VERSION}")
     results = []
     for path, prefix in zip(fastqs, prefixes):
         try:

@@ -347,6 +347,12 @@ class BatchTests(unittest.TestCase):
             "9M53XY_1_1108-G1.fastq": "1108",
             "HSYQJH_1_1039-3.fastq": "1039",
             "HSYQJH_1_1039-3.fastq.gz": "1039",
+            "J792H6_1_1147-F2-2": "1147",
+            "J792H6_1_1147-F2-2.fastq": "1147",
+            "J792H6_1_1147-F2-2.fastq.gz": "1147",
+            "7J92H6_12_1147-F2-2.fastq.gz": "1147",
+            "J792-H6_12_1147-F2-2.fastq.gz": "1147",
+            "1183_2_3.fastq": "1183",
             "9M53XY_2_1108-G2.fastq.gz": "1108",
             "9M53XY_barcode01_1108-G1.fq.gz": "1108",
             "9M53XY_1_1108_2-3.fastq": "1108",
@@ -397,6 +403,18 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["status"], "aligned")
         self.assertTrue(Path(result.iloc[0]["bam"]).is_file())
         self.assertTrue(Path(result.iloc[0]["igv_session"]).is_file())
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_plasmidsaurus_order_sample_plasmid_with_multiple_suffixes(self):
+        for name in ("J792H6_1_1147-F2-2.fastq", "J792H6_2_1147-F3-1.fastq.gz"):
+            self.fastq(name)
+        reference = self.snapgene("1147 reference.dna")
+        result = self.run_batch()
+        self.assertTrue(result["sample_id"].eq("1147").all())
+        self.assertTrue(result["status"].eq("aligned").all())
+        self.assertTrue(result["reference"].eq(str(reference)).all())
+        session = self.output / "1147 reference_all_reads_igv.xml"
+        self.assertEqual(len(ET.parse(session).findall("Resources/Resource")), 2)
 
 
 if __name__ == "__main__":

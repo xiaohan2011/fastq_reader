@@ -21,6 +21,7 @@ third field in a `RUN_BARCODE_ID` FASTQ filename:
 | `1132.fastq.gz` | `11320 plasmid.fa` | No |
 | `9M53XY_1_1108-G1.fastq` | `1108 plasmid.dna` | Yes |
 | `HSYQJH_1_1039-3.fastq` | `1039 reference.dna` | Yes |
+| `J792H6_1_1147-F2-2.fastq` | `1147 reference.dna` | Yes |
 
 For `9M53XY_1_1108-G1.fastq`, `9M53XY` is the sequencing-run token, `1` is the
 barcode, and **`1108` is the sample ID**. Numeric or `barcode01`-style barcode
@@ -30,6 +31,15 @@ alphanumeric run token are not used as IDs. Multiple run/barcode files with ID
 and track labels retain the complete FASTQ stem to distinguish those read files.
 Numeric suffixes such as `-3` and alphanumeric suffixes such as `-G1` are both
 supported and do not form part of the reference ID.
+
+Plasmidsaurus filenames are interpreted as
+`ORDER_ID_SAMPLE_NUMBER_PLASMID_ID` (three underscore-separated fields).
+For `J792H6_1_1147-F2-2.fastq`, the order token is `J792H6`, the sample
+number is `1`, and the plasmid ID is **1147**; all following hyphenated
+labels are ignored for matching. Order tokens may mix letters and numbers
+and may contain hyphens. Purely numeric leading filenames retain their
+leading ID. Each batch prints `Sample ID parser: plasmidsaurus-v2` to help
+confirm the installed code is current.
 
 Numbers are compared as written (`001132` and `1132` are different IDs). Every
 FASTQ gets its own outputs, including files sharing a sample ID. Missing
