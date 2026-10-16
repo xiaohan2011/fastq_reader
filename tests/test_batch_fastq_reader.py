@@ -308,6 +308,114 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(main([str(self.reads), "--output-dir", str(self.output),
                                "--reference-file", str(reference), "--threads", "2"]), 0)
 
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_same_fastq_id_infers_shared_reference_without_reference_file(self):
+        for name in ("1132_run1.fastq", "1132_run2.fastq.gz"):
+            self.fastq(name)
+        reference = self.snapgene("1132 plasmid.dna")
+        result = self.run_batch()
+        self.assertTrue(result["status"].eq("aligned").all())
+        self.assertTrue(result["reference"].eq(str(reference)).all())
+        session = self.output / "1132 plasmid_all_reads_igv.xml"
+        tracks = ET.parse(session).findall("Resources/Resource")
+        self.assertEqual({track.get("name") for track in tracks}, {"1132_run1", "1132_run2"})
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_range_suffixes_automatically_share_1183_reference(self):
+        names = [f"1183_{suffix}.fastq.gz" for suffix in ("2-3", "4-6", "12-17", "19-21")]
+        for name in names:
+            self.fastq(name)
+            self.assertEqual(sample_id(Path(name)), "1183")
+        self.fastq("11830_2-3.fastq.gz")
+        reference = self.snapgene("1183 ref.dna")
+        self.output = self.reads / "results"
+        result = self.run_batch()
+        matched = result[result["sample_id"] == "1183"]
+        self.assertEqual(len(matched), 4)
+        self.assertTrue(matched["status"].eq("aligned").all())
+        self.assertTrue(matched["reference"].eq(str(reference)).all())
+        self.assertEqual(result[result["sample_id"] == "11830"].iloc[0]["status"], "qc_only_missing_reference")
+        session = self.output / "1183 ref_all_reads_igv.xml"
+        resources = ET.parse(session).findall("Resources/Resource")
+        self.assertEqual({track.get("name") for track in resources},
+                         {name.removesuffix(".fastq.gz") for name in names})
+        self.assertTrue(matched["combined_igv_session"].eq(str(session)).all())
+        self.assertTrue(self.run_batch()["action"].eq("skipped").all())
+
+    def test_sample_id_with_sequencing_run_prefix(self):
+        cases = {
+            "9M53XY_1_1108-G1.fastq": "1108",
+            "HSYQJH_1_1039-3.fastq": "1039",
+            "HSYQJH_1_1039-3.fastq.gz": "1039",
+            "J792H6_1_1147-F2-2": "1147",
+            "J792H6_1_1147-F2-2.fastq": "1147",
+            "J792H6_1_1147-F2-2.fastq.gz": "1147",
+            "7J92H6_12_1147-F2-2.fastq.gz": "1147",
+            "J792-H6_12_1147-F2-2.fastq.gz": "1147",
+            "1183_2_3.fastq": "1183",
+            "9M53XY_2_1108-G2.fastq.gz": "1108",
+            "9M53XY_barcode01_1108-G1.fq.gz": "1108",
+            "9M53XY_1_1108_2-3.fastq": "1108",
+            "9M53XY_1_11080-G1.fastq": "11080",
+            "9M53XY_1_001108-G1.fastq": "001108",
+            "1108 reference.dna": "1108",
+            "1183_12-17.fastq.gz": "1183",
+            "9M53XY.fastq": "",
+            "9M53XY_1.fastq": "",
+            "9M53XY_1_1108A-G1.fastq": "",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(sample_id(Path(name)), expected)
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_run_prefixed_fastqs_match_reference_and_share_igv_session(self):
+        names = ["9M53XY_1_1108-G1.fastq", "9M53XY_2_1108-G2.fastq.gz"]
+        for name in names:
+            self.fastq(name)
+        reference = self.snapgene("1108 plasmid.dna")
+        result = self.run_batch()
+        self.assertTrue(result["sample_id"].eq("1108").all())
+        self.assertTrue(result["reference"].eq(str(reference)).all())
+        self.assertTrue(result["status"].eq("aligned").all())
+        session = self.output / "1108 plasmid_all_reads_igv.xml"
+        resources = ET.parse(session).findall("Resources/Resource")
+        self.assertEqual({r.get("name") for r in resources},
+                         {"9M53XY_1_1108-G1", "9M53XY_2_1108-G2"})
+        self.assertTrue(result["combined_igv_session"].eq(str(session)).all())
+
+    def test_run_prefix_and_barcode_cannot_match_wrong_reference(self):
+        self.fastq("9M53XY_1_1108-G1.fastq")
+        self.fasta("9 flowcell.fa")
+        self.fasta("1 barcode.fa")
+        self.fasta("11080 unrelated.fa")
+        result = self.run_batch()
+        self.assertEqual(result.iloc[0]["sample_id"], "1108")
+        self.assertEqual(result.iloc[0]["status"], "qc_only_missing_reference")
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_1039_numeric_suffix_matches_and_aligns(self):
+        self.fastq("HSYQJH_1_1039-3.fastq")
+        reference = self.snapgene("1039 reference.dna")
+        result = self.run_batch()
+        self.assertEqual(result.iloc[0]["sample_id"], "1039")
+        self.assertEqual(result.iloc[0]["reference"], str(reference))
+        self.assertEqual(result.iloc[0]["status"], "aligned")
+        self.assertTrue(Path(result.iloc[0]["bam"]).is_file())
+        self.assertTrue(Path(result.iloc[0]["igv_session"]).is_file())
+
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_plasmidsaurus_order_sample_plasmid_with_multiple_suffixes(self):
+        for name in ("J792H6_1_1147-F2-2.fastq", "J792H6_2_1147-F3-1.fastq.gz"):
+            self.fastq(name)
+        reference = self.snapgene("1147 reference.dna")
+        result = self.run_batch()
+        self.assertTrue(result["sample_id"].eq("1147").all())
+        self.assertTrue(result["status"].eq("aligned").all())
+        self.assertTrue(result["reference"].eq(str(reference)).all())
+        session = self.output / "1147 reference_all_reads_igv.xml"
+        self.assertEqual(len(ET.parse(session).findall("Resources/Resource")), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
