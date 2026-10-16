@@ -11,17 +11,39 @@ helper (`run_minimap2_ont.sh`) remain available.
 It accepts `.fastq`, `.fq`, `.fastq.gz`, and `.fq.gz` files (case insensitive).
 Reference formats are `.fa`, `.fasta`, `.fna`, `.fas`, and binary SnapGene `.dna`.
 
-References match by the **complete leading number** in each filename:
+References match by the **sample ID**, either a complete leading number or the
+third field in a `RUN_BARCODE_ID` FASTQ filename:
 
 | FASTQ | Reference | Match |
 | --- | --- | --- |
 | `1132.fastq.gz` | `1132 LPPC EE R-S.dna` | Yes |
 | `1133.fastq.gz` | `1133 LPPC EE R-T.fa` | Yes |
 | `1132.fastq.gz` | `11320 plasmid.fa` | No |
+| `9M53XY_1_1108-G1.fastq` | `1108 plasmid.dna` | Yes |
+| `HSYQJH_1_1039-3.fastq` | `1039 reference.dna` | Yes |
+| `J792H6_1_1147-F2-2.fastq` | `1147 reference.dna` | Yes |
+
+For `9M53XY_1_1108-G1.fastq`, `9M53XY` is the sequencing-run token, `1` is the
+barcode, and **`1108` is the sample ID**. Numeric or `barcode01`-style barcode
+fields are supported. A sample ID ends at a separator; digits inside an
+alphanumeric run token are not used as IDs. Multiple run/barcode files with ID
+`1108` automatically share its reference and combined IGV session. Output prefixes
+and track labels retain the complete FASTQ stem to distinguish those read files.
+Numeric suffixes such as `-3` and alphanumeric suffixes such as `-G1` are both
+supported and do not form part of the reference ID.
+
+Plasmidsaurus filenames are interpreted as
+`ORDER_ID_SAMPLE_NUMBER_PLASMID_ID` (three underscore-separated fields).
+For `J792H6_1_1147-F2-2.fastq`, the order token is `J792H6`, the sample
+number is `1`, and the plasmid ID is **1147**; all following hyphenated
+labels are ignored for matching. Order tokens may mix letters and numbers
+and may contain hyphens. Purely numeric leading filenames retain their
+leading ID. Each batch prints `Sample ID parser: plasmidsaurus-v2` to help
+confirm the installed code is current.
 
 Numbers are compared as written (`001132` and `1132` are different IDs). Every
 FASTQ gets its own outputs, including files sharing a sample ID. Missing
-references or filenames without a leading number still get QC. Multiple matching
+references or filenames without a recognized sample ID still get QC. Multiple matching
 references produce QC and an `ambiguous_reference` result; alignment is skipped
 until the reference folder has exactly one match for that ID.
 
@@ -73,6 +95,12 @@ Install `requirements-notebook.txt` instead of `requirements.txt` if you need
 Jupyter, then open `2_batch_fastq_reader.ipynb` from the repository folder. Set
 `FASTQ_DIR`, `REFERENCE_DIR`, and `OUTPUT_DIR` in the settings cell and run the
 notebook. It calls the same implementation as the command line.
+The processing cell reloads the Python module each time and prints its file path,
+so updated matching code is used without relying on a kernel restart. Download
+both the updated notebook and `batch_fastq_reader.py` into the same repository
+folder. Missing-reference messages show the detected ID and searched folder;
+check `REFERENCE_DIR` if the ID is correct. To rebuild older QC-only results,
+use `OVERWRITE = True` once, then restore it to `False`.
 
 ### Outputs and reruns
 
@@ -169,6 +197,21 @@ also regenerated. Existing customized sessions are preserved on skipped runs.
 
 ### One shared reference, multiple FASTQs
 
+**Automatic matching is the default:** FASTQs sharing the same detected sample
+ID use the reference with that ID. For example, `1183_2-3.fastq.gz`,
+`1183_4-6.fastq.gz`, `1183_12-17.fastq.gz`, and `1183_19-21.fastq.gz` all use
+`1183 ref.dna` (or an `1183` FASTA). The suffix ranges label read files and are
+ignored when choosing the reference. `11830` is a different ID and will not
+match `1183`. Multiple matching references remain ambiguous.
+
+Put the reference in the FASTQ folder or select its folder with `REFERENCE_DIR` /
+`--reference-dir`. Leave `REFERENCE_FILE = None`; there is no need to select a
+shared file. The batch reports the detected shared-reference groups and creates
+one `1183 ref_all_reads_igv.xml` with four separately labeled BAM tracks, in
+addition to the individual sessions. Multiple sample IDs in one folder are
+grouped independently.
+
+**Optional override for different IDs:**
 Use `--reference-file` to align every FASTQ to a single reference instead of
 matching references by sample ID:
 
