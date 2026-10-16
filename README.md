@@ -11,26 +11,17 @@ helper (`run_minimap2_ont.sh`) remain available.
 It accepts `.fastq`, `.fq`, `.fastq.gz`, and `.fq.gz` files (case insensitive).
 Reference formats are `.fa`, `.fasta`, `.fna`, `.fas`, and binary SnapGene `.dna`.
 
-References match by the **sample ID**, either a complete leading number or the
-third field in a `RUN_BARCODE_ID` FASTQ filename:
+References match by the **complete leading number** in each filename:
 
 | FASTQ | Reference | Match |
 | --- | --- | --- |
 | `1132.fastq.gz` | `1132 LPPC EE R-S.dna` | Yes |
 | `1133.fastq.gz` | `1133 LPPC EE R-T.fa` | Yes |
 | `1132.fastq.gz` | `11320 plasmid.fa` | No |
-| `9M53XY_1_1108-G1.fastq` | `1108 plasmid.dna` | Yes |
-
-For `9M53XY_1_1108-G1.fastq`, `9M53XY` is the sequencing-run token, `1` is the
-barcode, and **`1108` is the sample ID**. Numeric or `barcode01`-style barcode
-fields are supported. A sample ID ends at a separator; digits inside an
-alphanumeric run token are not used as IDs. Multiple run/barcode files with ID
-`1108` automatically share its reference and combined IGV session. Output prefixes
-and track labels retain the complete FASTQ stem to distinguish those read files.
 
 Numbers are compared as written (`001132` and `1132` are different IDs). Every
 FASTQ gets its own outputs, including files sharing a sample ID. Missing
-references or filenames without a recognized sample ID still get QC. Multiple matching
+references or filenames without a leading number still get QC. Multiple matching
 references produce QC and an `ambiguous_reference` result; alignment is skipped
 until the reference folder has exactly one match for that ID.
 
@@ -178,21 +169,6 @@ also regenerated. Existing customized sessions are preserved on skipped runs.
 
 ### One shared reference, multiple FASTQs
 
-**Automatic matching is the default:** FASTQs sharing the same detected sample
-ID use the reference with that ID. For example, `1183_2-3.fastq.gz`,
-`1183_4-6.fastq.gz`, `1183_12-17.fastq.gz`, and `1183_19-21.fastq.gz` all use
-`1183 ref.dna` (or an `1183` FASTA). The suffix ranges label read files and are
-ignored when choosing the reference. `11830` is a different ID and will not
-match `1183`. Multiple matching references remain ambiguous.
-
-Put the reference in the FASTQ folder or select its folder with `REFERENCE_DIR` /
-`--reference-dir`. Leave `REFERENCE_FILE = None`; there is no need to select a
-shared file. The batch reports the detected shared-reference groups and creates
-one `1183 ref_all_reads_igv.xml` with four separately labeled BAM tracks, in
-addition to the individual sessions. Multiple sample IDs in one folder are
-grouped independently.
-
-**Optional override for different IDs:**
 Use `--reference-file` to align every FASTQ to a single reference instead of
 matching references by sample ID:
 

@@ -33,18 +33,9 @@ REPORT_FIELDS = (
 
 
 def sample_id(path: Path) -> str:
-    """Read a leading ID or RUN_BARCODE_ID; never use digits inside run tokens."""
-    # A leading numeric token: 1183_2-3.fastq.gz or 1108 reference.dna.
-    match = re.match(r"^(\d+)(?=$|[_.\s-])", path.name)
-    if match:
-        return match.group(1)
-    # ONT-style names: 9M53XY_1_1108-G1.fastq. The first token is a
-    # run/flowcell identifier; the second is a barcode; the third is the ID.
-    match = re.match(
-        r"^[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*_(?:\d+|barcode\d+)_(\d+)(?=$|[_.\s-])",
-        path.name, re.IGNORECASE,
-    )
-    return match.group(1) if match else ""
+    """Match the complete leading digit sequence, never a numeric prefix."""
+    match = re.match(r"\d+", path.name)
+    return match.group() if match else ""
 
 
 def fastq_stem(path: Path) -> str:
@@ -320,7 +311,7 @@ def process_sample(
                 valid = all((output / name).is_file() and (output / name).stat().st_size > 0
                             for name in saved["artifacts"]
                             if name not in (names["igv_session"], names["fasta_index"]))
-                if saved["signature"] == signature and valid and saved["result"].get("sample_id") == identifier:
+                if saved["signature"] == signature and valid:
                     # Upgrade completed older runs without redoing their alignments.
                     if saved["result"]["status"] == "aligned":
                         write_igv_session(output / names["reference_fasta"], output / names["bam"],
@@ -362,7 +353,7 @@ def process_sample(
             if qc_only:
                 row.update(status="qc_only", message="Alignment disabled")
             elif not identifier and reference is None:
-                row.update(status="qc_only_no_sample_id", message="Filename has no recognized sample ID; no reference matched")
+                row.update(status="qc_only_no_sample_id", message="Filename has no leading number; no reference matched")
             elif len(candidates) > 1:
                 row.update(status="ambiguous_reference", message="QC complete; alignment skipped. Matches: " +
                            "; ".join(p.name for p in candidates))
@@ -420,23 +411,6 @@ def run_batch(
         for path in discover(reference_dir, REFERENCE_EXTENSIONS):
             if sample_id(path):
                 references[sample_id(path)].append(path)
-    fastqs_by_id = defaultdict(list)
-    for path in fastqs:
-        fastqs_by_id[sample_id(path)].append(path)
-    # Resolve one reference choice per sample ID, shared by every read file
-    # bearing that ID. Suffix ranges are read-file labels, not reference IDs.
-    candidates_by_id = {}
-    for identifier, read_files in fastqs_by_id.items():
-        if qc_only:
-            candidates = []
-        elif shared_reference is not None:
-            candidates = [shared_reference]
-        else:
-            candidates = references[identifier]
-        candidates_by_id[identifier] = candidates
-        if len(read_files) > 1 and len(candidates) == 1:
-            print(f"[shared reference] ID {identifier or '(no numeric ID)'}: "
-                  f"{len(read_files)} FASTQs → {candidates[0].name}")
     stems = Counter(fastq_stem(path) for path in fastqs)
     # Distinguish same-stem inputs such as 1132.fastq and 1132.fastq.gz.
     prefixes = [fastq_stem(path) if stems[fastq_stem(path)] == 1 else path.name for path in fastqs]
@@ -447,7 +421,7 @@ def run_batch(
     for path, prefix in zip(fastqs, prefixes):
         try:
             result = process_sample(
-                path, candidates_by_id[sample_id(path)], output, prefix, bin_size=bin_size,
+                path, ([shared_reference] if shared_reference is not None and not qc_only else references[sample_id(path)]), output, prefix, bin_size=bin_size,
                 log_y=log_y, threads=threads, overwrite=overwrite, qc_only=qc_only,
             )
         except Exception as error:
