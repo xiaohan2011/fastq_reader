@@ -26,6 +26,7 @@ import pandas as pd
 FASTQ_EXTENSIONS = (".fastq.gz", ".fq.gz", ".fastq", ".fq")
 REFERENCE_EXTENSIONS = (".fasta", ".fa", ".fna", ".fas", ".dna")
 WORKFLOW_VERSION = 1
+ID_PARSER_VERSION = "plasmidsaurus-v2"
 REPORT_FIELDS = (
     "sample_id", "fastq", "reference", "action", "status", "reads",
     "summary_csv", "histogram_png", "bam", "bai", "alignment_log", "igv_session", "combined_igv_session", "message",
@@ -33,9 +34,20 @@ REPORT_FIELDS = (
 
 
 def sample_id(path: Path) -> str:
-    """Match the complete leading digit sequence, never a numeric prefix."""
-    match = re.match(r"\d+", path.name)
-    return match.group() if match else ""
+    """Read a leading plasmid ID or ORDER_SAMPLE_PLASMID Plasmidsaurus name."""
+    # Split the vendor fields explicitly. Hyphenated labels after the plasmid
+    # ID (e.g. 1147-F2-2) never change that ID. Require a letter in the order
+    # token so ordinary numeric filenames like 1183_2_3 retain their leading ID.
+    fields = path.name.split("_", 2)
+    if (len(fields) == 3
+            and re.fullmatch(r"[A-Za-z0-9-]+", fields[0])
+            and re.search(r"[A-Za-z]", fields[0])
+            and re.fullmatch(r"(?:barcode)?\d+", fields[1], re.IGNORECASE)):
+        plasmid = re.match(r"^(\d+)(?=$|[_.\s-])", fields[2])
+        return plasmid.group(1) if plasmid else ""
+    # A leading numeric token: 1183_2-3.fastq.gz or 1108 reference.dna.
+    match = re.match(r"^(\d+)(?=$|[_.\s-])", path.name)
+    return match.group(1) if match else ""
 
 
 def fastq_stem(path: Path) -> str:
@@ -311,7 +323,7 @@ def process_sample(
                 valid = all((output / name).is_file() and (output / name).stat().st_size > 0
                             for name in saved["artifacts"]
                             if name not in (names["igv_session"], names["fasta_index"]))
-                if saved["signature"] == signature and valid:
+                if saved["signature"] == signature and valid and saved["result"].get("sample_id") == identifier:
                     # Upgrade completed older runs without redoing their alignments.
                     if saved["result"]["status"] == "aligned":
                         write_igv_session(output / names["reference_fasta"], output / names["bam"],
@@ -353,7 +365,7 @@ def process_sample(
             if qc_only:
                 row.update(status="qc_only", message="Alignment disabled")
             elif not identifier and reference is None:
-                row.update(status="qc_only_no_sample_id", message="Filename has no leading number; no reference matched")
+                row.update(status="qc_only_no_sample_id", message="Filename has no recognized sample ID; no reference matched")
             elif len(candidates) > 1:
                 row.update(status="ambiguous_reference", message="QC complete; alignment skipped. Matches: " +
                            "; ".join(p.name for p in candidates))
@@ -411,25 +423,47 @@ def run_batch(
         for path in discover(reference_dir, REFERENCE_EXTENSIONS):
             if sample_id(path):
                 references[sample_id(path)].append(path)
+    fastqs_by_id = defaultdict(list)
+    for path in fastqs:
+        fastqs_by_id[sample_id(path)].append(path)
+    # Resolve one reference choice per sample ID, shared by every read file
+    # bearing that ID. Suffix ranges are read-file labels, not reference IDs.
+    candidates_by_id = {}
+    for identifier, read_files in fastqs_by_id.items():
+        if qc_only:
+            candidates = []
+        elif shared_reference is not None:
+            candidates = [shared_reference]
+        else:
+            candidates = references[identifier]
+        candidates_by_id[identifier] = candidates
+        if len(read_files) > 1 and len(candidates) == 1:
+            print(f"[shared reference] ID {identifier or '(no numeric ID)'}: "
+                  f"{len(read_files)} FASTQs → {candidates[0].name}")
     stems = Counter(fastq_stem(path) for path in fastqs)
     # Distinguish same-stem inputs such as 1132.fastq and 1132.fastq.gz.
     prefixes = [fastq_stem(path) if stems[fastq_stem(path)] == 1 else path.name for path in fastqs]
     if len(set(prefixes)) != len(prefixes):
         raise ValueError("FASTQ filenames cause output name collisions; rename the conflicting inputs")
     output.mkdir(parents=True, exist_ok=True)
+    print(f"Sample ID parser: {ID_PARSER_VERSION}")
     results = []
     for path, prefix in zip(fastqs, prefixes):
         try:
             result = process_sample(
-                path, ([shared_reference] if shared_reference is not None and not qc_only else references[sample_id(path)]), output, prefix, bin_size=bin_size,
+                path, candidates_by_id[sample_id(path)], output, prefix, bin_size=bin_size,
                 log_y=log_y, threads=threads, overwrite=overwrite, qc_only=qc_only,
             )
         except Exception as error:
             result = dict.fromkeys(REPORT_FIELDS, "")
             result.update(sample_id=sample_id(path), fastq=str(path), action="processed", status="failed",
                           message=f"{type(error).__name__}: {error}")
+        if result["status"] == "qc_only_missing_reference":
+            result["message"] = (f"No matching reference for ID {sample_id(path)} in {reference_dir}; "
+                                 "QC complete. Check REFERENCE_DIR and the reference filename.")
         results.append(result)
-        print(f"[{result['action']}] {path.name}: {result['status']} — {result['message']}")
+        print(f"[{result['action']}] {path.name} (ID {sample_id(path) or 'unrecognized'}): "
+              f"{result['status']} — {result['message']}")
     combined = combined_igv_sessions(output, [row for row in results if row["status"] == "aligned"], overwrite=overwrite)
     for row in results:
         row["combined_igv_session"] = combined.get(row["bam"], "")
