@@ -416,6 +416,44 @@ class BatchTests(unittest.TestCase):
         session = self.output / "1147 reference_all_reads_igv.xml"
         self.assertEqual(len(ET.parse(session).findall("Resources/Resource")), 2)
 
+    @unittest.skipUnless(shutil.which("minimap2") and shutil.which("samtools"), "Alignment tools not installed")
+    def test_selected_fastq_with_explicit_reference_bypasses_ids(self):
+        selected = self.fastq("my selected reads.fastq.gz")
+        (self.reads / "unselected.fastq").write_text("malformed input that must not be processed")
+        for reference in (self.fasta("999 unrelated ID.fa"), self.snapgene("unrelated plasmid.dna")):
+            with self.subTest(reference=reference.name):
+                result = run_batch(None, self.output, fastq_file=selected, reference_file=reference,
+                                   overwrite=True, threads=2)
+                self.assertEqual(len(result), 1)
+                self.assertEqual(result.iloc[0]["fastq"], str(selected))
+                self.assertEqual(result.iloc[0]["reference"], str(reference))
+                self.assertEqual(result.iloc[0]["status"], "aligned")
+                self.assertTrue(Path(result.iloc[0]["igv_session"]).is_file())
+        self.assertFalse((self.output / "unselected_summary.csv").exists())
+        self.assertEqual(main(["--fastq-file", str(selected), "--reference-file", str(reference),
+                               "--output-dir", str(self.output), "--threads", "2"]), 0)
+
+    def test_selected_fastq_validates_file_and_supports_qc(self):
+        selected = self.fastq("1132.fastq")
+        result = run_batch("/nonexistent/ignored/folder", self.output, fastq_file=selected, qc_only=True)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result.iloc[0]["status"], "qc_only")
+        for bad in (self.reads / "missing.fastq", self.fasta("wrong extension.fa"), self.reads):
+            with self.subTest(path=bad):
+                with self.assertRaisesRegex(ValueError, "Selected FASTQ"):
+                    run_batch(None, self.output, fastq_file=bad)
+        with self.assertRaisesRegex(ValueError, "Provide a FASTQ folder"):
+            run_batch(None, self.output)
+
+    def test_single_file_prefix_matches_folder_run_for_duplicate_stems(self):
+        selected = self.fastq("1132.fastq.gz")
+        self.fastq("1132.fastq")
+        result = run_batch(None, self.output, fastq_file=selected, qc_only=True, threads=2)
+        self.assertEqual(Path(result.iloc[0]["summary_csv"]).name, "1132.fastq.gz_summary.csv")
+        folder = self.run_batch(qc_only=True)
+        selected_row = folder[folder["fastq"] == str(selected)].iloc[0]
+        self.assertEqual(selected_row["action"], "skipped")
+
 
 if __name__ == "__main__":
     unittest.main()

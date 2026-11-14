@@ -102,6 +102,36 @@ folder. Missing-reference messages show the detected ID and searched folder;
 check `REFERENCE_DIR` if the ID is correct. To rebuild older QC-only results,
 use `OVERWRITE = True` once, then restore it to `False`.
 
+### Align a specific FASTQ with a specific reference
+
+In the notebook settings, select both files:
+
+```python
+FASTQ_FILE = Path("/path/to/selected_reads.fastq.gz")
+REFERENCE_FILE = Path("/path/to/selected_reference.dna")  # or .fa/.fasta
+QC_ONLY = False
+OUTPUT_DIR = FASTQ_FILE.parent / "results"
+```
+
+Run the settings and processing cells. Only the selected FASTQ is processed;
+`FASTQ_DIR` and ID-based reference matching are bypassed. The outputs include
+the same CSV, histogram, alignment BAM/index, reference FASTA/index, and IGV
+session as the batch workflow. Names/IDs of the two files do not need to match.
+Use `OVERWRITE = True` when changing the reference for existing outputs.
+
+Command-line equivalent (no positional folder required):
+
+```bash
+python batch_fastq_reader.py \
+  --fastq-file "/path/to/selected_reads.fastq.gz" \
+  --reference-file "/path/to/selected_reference.dna" \
+  --output-dir "/path/to/results"
+```
+
+`FASTQ_FILE`/`--fastq-file` can also select a single file for automatic reference
+matching or QC-only processing. When switching back to automatic folder matching,
+set both `FASTQ_FILE = None` and `REFERENCE_FILE = None`.
+
 ### Outputs and reruns
 
 All generated results are written **directly into one separate output folder**:
