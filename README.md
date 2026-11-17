@@ -102,6 +102,31 @@ folder. Missing-reference messages show the detected ID and searched folder;
 check `REFERENCE_DIR` if the ID is correct. To rebuild older QC-only results,
 use `OVERWRITE = True` once, then restore it to `False`.
 
+### PyCharm: editable settings and a normal Run button
+
+Open **`run_fastq_reader.py`** together with `batch_fastq_reader.py` in the same
+project. Edit the Settings section, select a Python **3.10 or newer** interpreter
+with `requirements.txt` installed, then right-click `run_fastq_reader.py` and
+choose **Run**. No command-line arguments or Jupyter installation are required.
+The launcher supports both folder matching and explicit FASTQ/reference pairing.
+`OUTPUT_DIR = None` automatically creates a nested `results` folder. Minimap2
+and samtools must still be installed and visible to the selected interpreter.
+
+If PyCharm shows `{ "cells": [...] }`, `"source"`, or `"outputs"`, it is showing
+**notebook JSON**, not normal rendered cells. This can mean the file opened as
+text, or that a whole notebook was accidentally stored inside one raw/markdown
+cell. In the latter case, changing editors alone will not repair it: download
+the corrected `2_batch_fastq_reader.ipynb` from this branch. A regression check
+now verifies that it contains separate, executable settings and processing cells.
+Do not paste notebook JSON into a Python or markdown cell or rename it to `.py`.
+A notebook source file must retain
+its `.ipynb` extension and open in PyCharm's Jupyter notebook editor (when available),
+or in JupyterLab. For an `.ipynb` opened as text, check **Open With** / file-type
+association and select the notebook editor; exact menu wording depends on the
+PyCharm version. The regular `.py` launcher above avoids this editor requirement.
+Copy your existing path settings into the launcher's Settings section; keep your
+original customized notebook as a backup.
+
 ### Align a specific FASTQ with a specific reference
 
 In the notebook settings, select both files:
