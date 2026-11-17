@@ -393,12 +393,21 @@ def process_sample(
 
 
 def run_batch(
-    fastq_dir: str | Path, output_dir: str | Path, reference_dir: str | Path | None = None,
+    fastq_dir: str | Path | None, output_dir: str | Path, reference_dir: str | Path | None = None,
     *, overwrite: bool = False, qc_only: bool = False, bin_size: int = 2000,
     log_y: bool = False, threads: int = 4, reference_file: str | Path | None = None,
+    fastq_file: str | Path | None = None,
 ) -> pd.DataFrame:
-    """Process all top-level FASTQs; return and save the per-file batch report."""
-    fastq_dir = Path(fastq_dir).expanduser().resolve()
+    """Process a folder or one selected FASTQ; explicit reference_file overrides ID matching."""
+    selected_fastq = Path(fastq_file).expanduser().resolve() if fastq_file is not None else None
+    if selected_fastq is not None:
+        if not selected_fastq.is_file() or not selected_fastq.name.lower().endswith(FASTQ_EXTENSIONS):
+            raise ValueError(f"Selected FASTQ must be an existing .fastq/.fq file (optionally .gz): {selected_fastq}")
+        fastq_dir = selected_fastq.parent
+    elif fastq_dir is not None:
+        fastq_dir = Path(fastq_dir).expanduser().resolve()
+    else:
+        raise ValueError("Provide a FASTQ folder or select fastq_file")
     output = Path(output_dir).expanduser().resolve()
     reference_dir = Path(reference_dir).expanduser().resolve() if reference_dir else fastq_dir
     shared_reference = Path(reference_file).expanduser().resolve() if reference_file else None
@@ -415,7 +424,8 @@ def run_batch(
         raise ValueError("Use a separate output folder, not an input/reference folder")
     if bin_size < 1 or threads < 1:
         raise ValueError("bin_size and threads must be positive integers")
-    fastqs = discover(fastq_dir, FASTQ_EXTENSIONS)
+    folder_fastqs = discover(fastq_dir, FASTQ_EXTENSIONS)
+    fastqs = [selected_fastq] if selected_fastq is not None else folder_fastqs
     if not fastqs:
         raise ValueError(f"No supported FASTQ files in {fastq_dir} (subfolders are not scanned)")
     references = defaultdict(list)
@@ -440,7 +450,8 @@ def run_batch(
         if len(read_files) > 1 and len(candidates) == 1:
             print(f"[shared reference] ID {identifier or '(no numeric ID)'}: "
                   f"{len(read_files)} FASTQs → {candidates[0].name}")
-    stems = Counter(fastq_stem(path) for path in fastqs)
+    # Keep prefixes consistent between single-file and whole-folder runs.
+    stems = Counter(fastq_stem(path) for path in folder_fastqs)
     # Distinguish same-stem inputs such as 1132.fastq and 1132.fastq.gz.
     prefixes = [fastq_stem(path) if stems[fastq_stem(path)] == 1 else path.name for path in fastqs]
     if len(set(prefixes)) != len(prefixes):
@@ -477,7 +488,8 @@ def run_batch(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("fastq_dir", type=Path, help="FASTQ folder; no recursive search (unused with --igv-only)")
+    parser.add_argument("fastq_dir", type=Path, nargs="?", help="FASTQ folder (optional with --fastq-file or --igv-only)")
+    parser.add_argument("--fastq-file", type=Path, help="Process only this FASTQ; pair with --reference-file to bypass ID matching")
     parser.add_argument("--reference-dir", type=Path, help="FASTA/SnapGene folder (default: FASTQ folder)")
     parser.add_argument("--reference-file", type=Path, help="One shared FASTA/SnapGene reference for every FASTQ; overrides folder matching")
     parser.add_argument("--output-dir", type=Path, required=True, help="Separate folder for all generated files")
@@ -490,13 +502,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.igv_only and args.qc_only:
         parser.error("--igv-only and --qc-only cannot be combined")
+    if args.igv_only and args.fastq_file:
+        parser.error("--igv-only and --fastq-file cannot be combined")
+    if not args.igv_only and args.fastq_dir is None and args.fastq_file is None:
+        parser.error("provide a FASTQ folder or --fastq-file")
     try:
         if args.igv_only:
             report = create_igv_sessions(args.output_dir, overwrite=args.overwrite)
             return int(report["status"].eq("failed").any())
         report = run_batch(args.fastq_dir, args.output_dir, args.reference_dir,
                            overwrite=args.overwrite, qc_only=args.qc_only, bin_size=args.bin_size,
-                           log_y=args.log_y, threads=args.threads, reference_file=args.reference_file)
+                           log_y=args.log_y, threads=args.threads, reference_file=args.reference_file,
+                           fastq_file=args.fastq_file)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return int(report["status"].isin(["failed", "ambiguous_reference"]).any())
