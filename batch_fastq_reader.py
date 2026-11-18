@@ -135,14 +135,14 @@ def prepare_reference(source: Path, destination: Path, identifier: str) -> None:
     SeqIO.write(records, destination, "fasta")
 
 
-def align(reference: Path, fastq: Path, bam: Path, log: Path, threads: int) -> None:
+def align(reference: Path, fastq: Path, bam: Path, log: Path, threads: int, preset: str = "map-ont") -> None:
     for tool in ("minimap2", "samtools"):
         if not shutil.which(tool):
             raise RuntimeError(f"{tool} is missing from PATH; install it to enable alignment")
     with log.open("w") as errors:
         # Write stderr directly to disk to avoid a blocked stderr pipe on large jobs.
         mapper = subprocess.Popen(
-            ["minimap2", "-t", str(threads), "-ax", "map-ont", str(reference), str(fastq)],
+            ["minimap2", "-t", str(threads), "-ax", preset, str(reference), str(fastq)],
             stdout=subprocess.PIPE, stderr=errors,
         )
         try:
