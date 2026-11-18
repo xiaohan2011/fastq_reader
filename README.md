@@ -1,5 +1,9 @@
 # FASTQ reader
 
+**De novo assembly:** see [ASSEMBLY.md](ASSEMBLY.md) and open
+`run_denovo_assembly.py` for a local PyCharm workflow that assembles reads with
+Flye, checks read-back coverage, and optionally compares to a SnapGene/FASTA reference.
+
 Analyze Nanopore FASTQ files with a length-sorted CSV and read-length histogram,
 and optionally align reads to a reference with minimap2 and samtools.
 The original single-file notebook (`1_fastq_reader.ipynb`) and interactive shell
