@@ -334,7 +334,7 @@ as their reference sequence names, rebuild with `--reference-file` and
 ### Validation
 
 ```bash
-python -m unittest discover -s tests -v
+uv run --locked python -m pytest -ra
 ```
 
 Tests cover compressed/plain FASTQ QC, leading-number matching, top-level-only

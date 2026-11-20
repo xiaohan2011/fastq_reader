@@ -13,4 +13,4 @@ notebook = [
     "ipykernel>=6,<8",
     "jupyterlab>=4,<5",
 ]
-dev = ["pillow"]
+dev = ["pillow", "pytest>=8,<10"]
