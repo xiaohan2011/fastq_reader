@@ -8,7 +8,7 @@ import unittest
 
 class NotebookStructureTests(unittest.TestCase):
     def test_batch_notebook_has_real_settings_and_processing_cells(self):
-        path = Path(__file__).resolve().parents[1] / "2_batch_fastq_reader.ipynb"
+        path = Path(__file__).resolve().parents[1] / "batch_fastq_reader.ipynb"
         notebook = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(notebook["nbformat"], 4)
         code_cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]

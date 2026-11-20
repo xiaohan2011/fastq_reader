@@ -6,8 +6,9 @@ Flye, checks read-back coverage, and optionally compares to a SnapGene/FASTA ref
 
 Analyze Nanopore FASTQ files with a length-sorted CSV and read-length histogram,
 and optionally align reads to a reference with minimap2 and samtools.
-The original single-file notebook (`1_fastq_reader.ipynb`) and interactive shell
-helper (`run_minimap2_ont.sh`) remain available.
+Use [the batch notebook](batch_fastq_reader.ipynb) for folders or single files.
+The [original single-file notebook](archive/1_fastq_reader.ipynb) is archived for
+reference. The interactive shell helper (`run_minimap2_ont.sh`) remains available.
 
 ## Batch processing
 
@@ -98,8 +99,7 @@ Use the actual Dropbox path on each laptop. Windows accepts paths such as
 `C:/Users/yourname/Dropbox/FASTQ`; within WSL use Linux paths such as
 `/mnt/c/Users/yourname/Dropbox/FASTQ`. Relative paths are based on the
 checkout. Optional settings include `reference_dir`, `reference_file`, and
-`output_dir` where the corresponding launcher supports them. The legacy
-notebook reads `fastq_file` and `fasta_file` from `legacy_notebook`.
+`output_dir` where the corresponding launcher supports them.
 
 The Python workflow looks for native tools on `PATH` and then in `tool_dirs`.
 On Windows, FASTQ QC runs without external tools. For alignment, use native
