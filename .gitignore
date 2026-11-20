@@ -1,4 +1,57 @@
+# Local IDE settings, Python caches, and notebook checkpoints
+.idea/
+.DS_Store
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .ipynb_checkpoints/
+
+# Local Python environments
 .venv/
+.venv-*/
+venv/
+env/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+.envrc
+credentials.json
+secrets.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local sequencing data and default output folders
+/data/
+/output/
+/outputs/
+results/
+*_denovo/
+*_denovo_*/
+.fastq-work-*/
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.pod5
+*.fast5
+*.bam
+*.bai
+*.sam
+*.cram
+*.crai
+*.paf
+*.fai
+
+# Keep deliberately small, synthetic test inputs and expected results trackable.
+!tests/fixtures/**/*.fastq
+!tests/fixtures/**/*.fastq.gz
+!tests/fixtures/**/*.fq
+!tests/fixtures/**/*.fq.gz
+!tests/fixtures/**/*.bam
+!tests/fixtures/**/*.bai
+!tests/fixtures/**/*.sam
+!tests/fixtures/**/*.paf
