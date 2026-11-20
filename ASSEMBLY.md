@@ -112,13 +112,21 @@ results so the relative paths in IGV continue to work.
 
 ## Existing runs and failures
 
-The output directory must be new/empty for a new run. Existing input/output files
-are never deleted automatically. For a failed or completed run with identical
+If the output folder already contains files, a fresh run uses a timestamped
+sibling folder. Existing inputs and outputs are preserved. For a failed or completed run with identical
 inputs/settings, set `RESUME = True` or add `--resume`. A completed run is reused
 when its expected artifacts still exist; an incomplete Flye run resumes using
 Flye's own checkpoints. Inputs are checked by path, size and modification time,
 not full content hashes. If settings or inputs change, select a new output folder.
 Inspect `assembly.log`, `read_back_alignment.log`, and `run_state.json` for failures.
+
+Genome size and initial assembly coverage are optional. If Flye reports zero
+disjointigs and an overlap-based coverage above 100×, the workflow retries once
+at 100× initial coverage unless you set a coverage limit yourself. If no size was
+provided, it estimates size from total read bases divided by the reported overlap
+coverage. This is approximate, especially for mixtures or uneven coverage.
+The retry uses a separate `flye_retry/` directory and records its settings in
+`run_state.json`. Other errors are reported directly.
 
 ## Validation
 

@@ -5,13 +5,17 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import ExitStack
+from datetime import datetime
 import gzip
 import json
+import re
 from pathlib import Path
 import shutil
 import statistics
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 
 from Bio import SeqIO
 
@@ -102,7 +106,8 @@ def compare_reference(reference: Path, assembly: Path, output: Path, commands: l
 def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
                  reference_file: str | Path | None = None, *, read_type: str = "nano-hq",
                  threads: int = 4, genome_size: str | None = None, min_overlap: int | None = None,
-                 polish_iterations: int = 2, resume: bool = False) -> dict:
+                 polish_iterations: int = 2, resume: bool = False,
+                 asm_coverage: int | None = None) -> dict:
     """Assemble reads independently; the optional reference is used only afterward."""
     fastq = Path(fastq_file).expanduser().resolve()
     prefix = fastq_stem(fastq)
@@ -115,6 +120,8 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
         raise ValueError("Choose a supported read_type and positive threads/polish_iterations")
     if min_overlap is not None and min_overlap < 1000:
         raise ValueError("Flye min_overlap must be at least 1000 bp")
+    if asm_coverage is not None and (asm_coverage < 1 or not genome_size):
+        raise ValueError("Flye asm_coverage requires a positive coverage and a genome size estimate")
     output = Path(output_dir).expanduser().resolve() if output_dir else fastq.parent / f"{prefix}_denovo"
     if any(path.is_relative_to(output) for path in (fastq, reference) if path is not None):
         raise ValueError("Use a dedicated output folder that does not contain your input files")
@@ -122,9 +129,16 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
                  "reference": fingerprint(reference) if reference else None, "read_type": read_type,
                  "threads": threads, "genome_size": genome_size, "min_overlap": min_overlap,
                  "polish_iterations": polish_iterations}
+    if asm_coverage is not None:
+        signature["asm_coverage"] = asm_coverage
+    if not resume and output.is_dir() and any(output.iterdir()):
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output = output.with_name(f"{output.name}_{stamp}")
+        print(f"Output folder already contains files. Writing to {output}", flush=True)
     state_path = output / "run_state.json"
-    if output.exists() and any(output.iterdir()):
-        if not resume or not state_path.is_file():
+    saved = {}
+    if resume and output.is_dir() and any(output.iterdir()):
+        if not state_path.is_file():
             raise ValueError("Output folder is not empty; choose a new folder or use resume=True for this run")
         saved = json.loads(state_path.read_text())
         if saved.get("signature") != signature:
@@ -146,16 +160,63 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
             option = "--version-only" if tool == "samtools" else "--version"
             versions[tool] = subprocess.check_output([tool, option], text=True).splitlines()[0]
         flye_dir = output / "flye"
-        command = ["flye", f"--{read_type}", str(fastq), "--out-dir", str(flye_dir),
-                   "--threads", str(threads), "--iterations", str(polish_iterations)]
-        if genome_size:
-            command += ["--genome-size", str(genome_size)]
-        if min_overlap is not None:
-            command += ["--min-overlap", str(min_overlap)]
-        if resume and (flye_dir / "params.json").is_file():
-            command += ["--resume"]
-        # No reference sequence/path is supplied to Flye.
-        run_command(command, output / "assembly.log", commands)
+        retry_settings = saved.get("flye_retry")
+        if retry_settings:
+            genome_size = retry_settings["genome_size"]
+            asm_coverage = retry_settings["asm_coverage"]
+            min_overlap = retry_settings["min_overlap"]
+            flye_dir = output / "flye_retry"
+            state["flye_retry"] = retry_settings
+            write_json(state_path, state)
+        while True:
+            try:
+                # Flye rejects spaces in read paths and passes paths to native tools.
+                # Keep the actual inputs and checkpoints in their original locations.
+                with ExitStack() as cleanup:
+                    reads_arg, output_arg = fastq, flye_dir
+                    if " " in str(fastq) or " " in str(flye_dir):
+                        alias_dir = Path(cleanup.enter_context(TemporaryDirectory(prefix="fastq-flye-")))
+                        if " " in str(alias_dir):
+                            raise ValueError("Flye requires a temporary directory with no spaces in its path")
+                        reads_arg = alias_dir / ("reads.fastq.gz" if fastq.name.lower().endswith(".gz") else "reads.fastq")
+                        reads_arg.symlink_to(fastq)
+                        flye_dir.mkdir(exist_ok=True)
+                        output_arg = alias_dir / "flye"
+                        output_arg.symlink_to(flye_dir, target_is_directory=True)
+                    command = ["flye", f"--{read_type}", str(reads_arg), "--out-dir", str(output_arg),
+                               "--threads", str(threads), "--iterations", str(polish_iterations)]
+                    if genome_size:
+                        command += ["--genome-size", str(genome_size)]
+                    if asm_coverage is not None:
+                        command += ["--asm-coverage", str(asm_coverage)]
+                    if min_overlap is not None:
+                        command += ["--min-overlap", str(min_overlap)]
+                    if resume and (flye_dir / "params.json").is_file():
+                        command += ["--resume"]
+                    run_command(command, output / "assembly.log", commands)
+                break
+            except RuntimeError:
+                flye_log = flye_dir / "flye.log"
+                if asm_coverage is not None or flye_dir.name != "flye" or not flye_log.is_file():
+                    raise
+                log_text = flye_log.read_text(errors="replace")
+                if "No disjointigs were assembled" not in log_text:
+                    raise
+                coverage = re.findall(r"Overlap-based coverage:\s*(\d+)", log_text)
+                if not coverage or int(coverage[-1]) <= 100:
+                    raise
+                if not genome_size:
+                    genome_size = str(max(1, round(qc["total_bases"] / int(coverage[-1]))))
+                asm_coverage = 100
+                min_overlap = 1000 if min_overlap is None else min_overlap
+                flye_dir = output / "flye_retry"
+                if flye_dir.exists():
+                    raise RuntimeError(f"Automatic retry directory already exists: {flye_dir}")
+                print(f"Flye produced no disjointigs. Retrying with a {genome_size} bp size "
+                      f"estimate and a {asm_coverage}x initial coverage limit.", flush=True)
+                state["flye_retry"] = {"genome_size": genome_size, "asm_coverage": asm_coverage,
+                                       "min_overlap": min_overlap}
+                write_json(state_path, state)
         source = flye_dir / "assembly.fasta"
         with source.open() as handle:
             records = list(SeqIO.parse(handle, "fasta"))
@@ -240,6 +301,7 @@ def main(argv=None) -> int:
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--genome-size", help="Optional size estimate, e.g. 105k; does not supply reference sequence")
     parser.add_argument("--min-overlap", type=int)
+    parser.add_argument("--asm-coverage", type=int, help="Limit initial disjointig coverage; requires --genome-size")
     parser.add_argument("--polish-iterations", type=int, default=2)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)

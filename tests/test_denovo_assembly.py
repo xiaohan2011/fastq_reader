@@ -47,12 +47,47 @@ class AssemblyValidationTests(unittest.TestCase):
         output.mkdir()
         keep = output / "keep.txt"
         keep.write_text("preserve")
-        with self.assertRaisesRegex(ValueError, "not empty"):
-            run_assembly(self.reads, output)
+        with patch("denovo_assembly.shutil.which", return_value="/tool"), \
+             patch("denovo_assembly.subprocess.check_output", return_value="version"), \
+             patch("denovo_assembly.run_command", side_effect=RuntimeError("stop after preparing output")):
+            with self.assertRaisesRegex(RuntimeError, "stop after preparing output"):
+                run_assembly(self.reads, output)
+        siblings = list(self.root.glob("existing_*"))
+        self.assertEqual(len(siblings), 1)
+        self.assertRegex(siblings[0].name, r"^existing_\d{8}_\d{6}_\d{6}$")
+        self.assertTrue((siblings[0] / "run_state.json").is_file())
         self.assertEqual(keep.read_text(), "preserve")
         for kwargs in ({"threads": 0}, {"min_overlap": 100}, {"read_type": "unknown"}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 run_assembly(self.reads, self.root / "new", **kwargs)
+
+    def test_high_coverage_empty_assembly_retries_without_manual_settings(self):
+        output = self.root / "new"
+        attempts = []
+
+        def flye(command, log, commands):
+            attempts.append(command)
+            destination = Path(command[command.index("--out-dir") + 1])
+            if len(attempts) == 1:
+                destination.mkdir(exist_ok=True)
+                (destination / "flye.log").write_text(
+                    "Overlap-based coverage: 500\nNo disjointigs were assembled\n"
+                )
+                raise RuntimeError("Flye produced no disjointigs")
+            raise RuntimeError("stop after verifying retry")
+
+        with patch("denovo_assembly.shutil.which", return_value="/tool"), \
+             patch("denovo_assembly.subprocess.check_output", return_value="version"), \
+             patch("denovo_assembly.read_qc", return_value={"total_bases": 50_000_000}), \
+             patch("denovo_assembly.run_command", side_effect=flye):
+            with self.assertRaisesRegex(RuntimeError, "stop after verifying retry"):
+                run_assembly(self.reads, output)
+        initial, retry = attempts
+        self.assertNotIn("--genome-size", initial)
+        self.assertNotIn("--asm-coverage", initial)
+        self.assertEqual(retry[retry.index("--genome-size") + 1], "100000")
+        self.assertEqual(retry[retry.index("--asm-coverage") + 1], "100")
+        self.assertTrue((output / "flye" / "flye.log").is_file())
 
     def test_missing_tools_are_actionable(self):
         with patch("denovo_assembly.shutil.which", return_value=None):
