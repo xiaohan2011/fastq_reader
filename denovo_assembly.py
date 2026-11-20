@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 import gzip
 import json
@@ -16,6 +16,8 @@ import statistics
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
+from time import monotonic
 
 from Bio import SeqIO
 
@@ -65,16 +67,60 @@ def write_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
+def progress(message: str) -> None:
+    print(f"[{datetime.now():%H:%M:%S}] {message}", flush=True)
+
+
+@contextmanager
+def show_progress(label: str):
+    progress(label)
+    started = monotonic()
+    finished = Event()
+
+    def report_while_running():
+        while not finished.wait(60):
+            elapsed = int(monotonic() - started)
+            progress(f"{label} still running ({elapsed // 60}m {elapsed % 60:02d}s elapsed)")
+
+    reporter = Thread(target=report_while_running, daemon=True)
+    reporter.start()
+    try:
+        yield
+    finally:
+        finished.set()
+        reporter.join()
+
+
 def run_command(command: list[str], log: Path, commands: list, *, stdout: Path | None = None) -> None:
     commands.append(command)
-    with log.open("a") as errors:
+    tool = Path(command[0]).name
+    label = f"Running {tool} (log: {log.name})"
+    with show_progress(label), ExitStack() as files:
+        errors = files.enter_context(log.open("a", encoding="utf-8"))
         if stdout is None:
-            result = subprocess.run(command, stdout=errors, stderr=subprocess.STDOUT)
+            output = subprocess.PIPE
+            diagnostics = subprocess.STDOUT
         else:
-            with stdout.open("w") as output:
-                result = subprocess.run(command, stdout=output, stderr=errors)
-    if result.returncode:
-        raise RuntimeError(f"{Path(command[0]).name} exited {result.returncode}; see {log}")
+            output = files.enter_context(stdout.open("wb"))
+            diagnostics = subprocess.PIPE
+        with subprocess.Popen(command, stdout=output, stderr=diagnostics, text=True,
+                              encoding="utf-8", errors="replace") as process:
+            stream = process.stdout if stdout is None else process.stderr
+            assert stream is not None
+            for line in stream:
+                errors.write(line)
+                errors.flush()
+                # PyCharm gives stderr its error color. Keep ordinary tool
+                # diagnostics on stdout even when the tool wrote them to stderr.
+                is_error = re.match(r"^(?:\[[^\]]+\]\s*)*(?:ERROR|FATAL)\b", line.lstrip(), re.I)
+                is_error = is_error or re.match(r"^\[E::", line.lstrip())
+                if is_error and sys.stderr.isatty():
+                    print(f"\033[31m{line.rstrip(chr(10))}\033[0m", file=sys.stderr, flush=True)
+                else:
+                    print(line, end="", file=sys.stderr if is_error else sys.stdout, flush=True)
+            return_code = process.wait()
+    if return_code:
+        raise RuntimeError(f"{tool} exited {return_code}; see {log}")
 
 
 def compare_reference(reference: Path, assembly: Path, output: Path, commands: list) -> list[dict]:
@@ -148,7 +194,10 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
     for tool in ("flye", "minimap2", "samtools"):
         if not shutil.which(tool):
             raise RuntimeError(f"{tool} is missing from PATH; see ASSEMBLY.md for installation")
-    qc = read_qc(fastq)
+    progress(f"Output folder: {output}")
+    with show_progress(f"Checking FASTQ: {fastq.name}"):
+        qc = read_qc(fastq)
+    progress(f"FASTQ check complete: {qc['total_bases']:,} bases")
     output.mkdir(parents=True, exist_ok=True)
     commands = []
     state = {"signature": signature, "status": "running", "commands": commands}
@@ -217,6 +266,7 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
                 state["flye_retry"] = {"genome_size": genome_size, "asm_coverage": asm_coverage,
                                        "min_overlap": min_overlap}
                 write_json(state_path, state)
+        progress("Flye finished. Reading assembled contigs.")
         source = flye_dir / "assembly.fasta"
         with source.open() as handle:
             records = list(SeqIO.parse(handle, "fasta"))
@@ -231,7 +281,8 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
         bam = output / f"{prefix}_reads_to_assembly.bam"
         preset = "map-hifi" if read_type == "pacbio-hifi" else "map-pb" if read_type.startswith("pacbio") else "map-ont"
         commands.append(["minimap2", "-t", str(threads), "-ax", preset, str(assembly), str(fastq)])
-        align(assembly, fastq, bam, output / "read_back_alignment.log", threads, preset=preset)
+        with show_progress(f"Aligning reads back to {len(records)} assembled contig(s)"):
+            align(assembly, fastq, bam, output / "read_back_alignment.log", threads, preset=preset)
         coverage_file = output / "read_back_coverage.tsv"
         run_command(["samtools", "coverage", str(bam)], output / "coverage.log", commands, stdout=coverage_file)
         coverage = {}
@@ -253,6 +304,7 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
         artifacts = [assembly.name, bam.name, bam.name + ".bai", assembly.name + ".fai", igv.name,
                      "read_qc.json", coverage_file.name, "summary.json", "REPORT.md"]
         if reference is not None:
+            progress("Preparing the optional reference comparison")
             converted = output / "comparison_reference.fasta"
             prepare_reference(reference, converted, "comparison_reference")
             comparisons = compare_reference(converted, assembly, output, commands)
@@ -285,6 +337,7 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
         (output / "REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         state.update(status="complete", artifacts=artifacts, tool_versions=versions)
         write_json(state_path, state)
+        progress(f"Assembly complete. Report: {output / 'REPORT.md'}")
         return summary
     except Exception as error:
         state.update(status="failed", error=f"{type(error).__name__}: {error}")
