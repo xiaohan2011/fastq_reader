@@ -80,6 +80,32 @@ source /workspace/fastq-reader-local/activate.sh
 cd /workspace/fastq_reader
 ```
 
+### Per-laptop data and tool paths
+
+Keep the checkout outside Dropbox and configure data paths in
+`.fastq-reader.local.json` in the checkout. Git ignores this file. For example:
+
+```json
+{
+  "tool_dirs": ["/path/to/native/tools/bin"],
+  "batch": {"fastq_dir": "~/Dropbox/FASTQ", "output_dir": "~/Dropbox/FASTQ results"},
+  "notebook": {"fastq_dir": "~/Dropbox/FASTQ"},
+  "assembly": {"fastq_file": "~/Dropbox/FASTQ/sample.fastq.gz"}
+}
+```
+
+Use the actual Dropbox path on each laptop. Windows accepts paths such as
+`C:/Users/yourname/Dropbox/FASTQ`; within WSL use Linux paths such as
+`/mnt/c/Users/yourname/Dropbox/FASTQ`. Relative paths are based on the
+checkout. Optional settings include `reference_dir`, `reference_file`, and
+`output_dir` where the corresponding launcher supports them. The legacy
+notebook reads `fastq_file` and `fasta_file` from `legacy_notebook`.
+
+The Python workflow looks for native tools on `PATH` and then in `tool_dirs`.
+On Windows, FASTQ QC runs without external tools. For alignment, use native
+`minimap2.exe` and `samtools.exe` where available, or run Python and the tools
+together inside WSL2. Flye and the optional Bash helper use macOS, Linux, or WSL2.
+
 ### Command line
 
 ```bash
@@ -105,9 +131,8 @@ Sync with `uv sync --locked --group notebook`, then open `2_batch_fastq_reader.i
 `FASTQ_DIR`, `REFERENCE_DIR`, and `OUTPUT_DIR` in the settings cell and run the
 notebook. It calls the same implementation as the command line.
 The processing cell reloads the Python module each time and prints its file path,
-so updated matching code is used without relying on a kernel restart. Download
-both the updated notebook and `batch_fastq_reader.py` into the same repository
-folder. Missing-reference messages show the detected ID and searched folder;
+so updated matching code is used without relying on a kernel restart. Keep the
+notebook, `batch_fastq_reader.py`, and `local_settings.py` in the same checkout. Missing-reference messages show the detected ID and searched folder;
 check `REFERENCE_DIR` if the ID is correct. To rebuild older QC-only results,
 use `OVERWRITE = True` once, then restore it to `False`.
 

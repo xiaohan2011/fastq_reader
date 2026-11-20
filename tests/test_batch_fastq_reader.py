@@ -3,7 +3,8 @@
 import gzip
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import ntpath
 import random
 import shutil
 import struct
@@ -16,14 +17,14 @@ from unittest.mock import patch
 import pandas as pd
 from PIL import Image
 
-from batch_fastq_reader import create_igv_sessions, main, run_batch, sample_id
+from batch_fastq_reader import create_igv_sessions, igv_resource_path, main, run_batch, sample_id
 
 
 class BatchTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.reads = self.root / "reads"
         self.refs = self.root / "references"
         self.output = self.root / "output"
@@ -58,6 +59,12 @@ class BatchTests(unittest.TestCase):
 
     def run_batch(self, **kwargs):
         return run_batch(self.reads, self.output, self.refs, threads=2, **kwargs)
+
+    def test_igv_paths_across_windows_drives(self):
+        reference = PureWindowsPath("D:/Dropbox/data/reference.fa")
+        session_dir = PureWindowsPath("C:/local/results")
+        with patch("batch_fastq_reader.os.path.relpath", wraps=ntpath.relpath):
+            self.assertEqual(igv_resource_path(reference, session_dir), reference.as_posix())
 
     def test_missing_reference_gzip_qc_and_skip(self):
         self.fastq("1132.fastq.gz")
@@ -163,6 +170,7 @@ class BatchTests(unittest.TestCase):
         self.assertIn("minimap2 is missing", result.iloc[0]["message"])
         self.assertTrue((self.output / "1132_summary.csv").is_file())
 
+    @unittest.skipIf(os.name == "nt", "Uses a POSIX shell script as the fake mapper")
     @unittest.skipUnless(shutil.which("samtools"), "samtools not installed")
     def test_mapper_failure_keeps_diagnostics_and_continues(self):
         self.fastq("1132.fastq")

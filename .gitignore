@@ -55,3 +55,6 @@ results/
 !tests/fixtures/**/*.bai
 !tests/fixtures/**/*.sam
 !tests/fixtures/**/*.paf
+
+# Machine-specific data and tool locations
+/.fastq-reader.local.json

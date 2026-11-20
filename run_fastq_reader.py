@@ -10,19 +10,21 @@ import importlib
 from pathlib import Path
 import sys
 
+from local_settings import local_path
+
 
 # %% Settings — edit these values, then run the entire file.
 # Folder mode: set FASTQ_DIR and leave FASTQ_FILE = None.
-FASTQ_DIR = Path("/path/to/fastq_folder")
-FASTQ_FILE = None  # or Path("/path/to/selected.fastq.gz") for just one file
+FASTQ_DIR = local_path("batch", "fastq_dir")
+FASTQ_FILE = local_path("batch", "fastq_file")  # or Path("/path/to/selected.fastq.gz") for just one file
 
 # Automatic matching: set REFERENCE_DIR, or leave None to search the FASTQ folder.
 # Explicit pairing: set FASTQ_FILE above and REFERENCE_FILE below.
-REFERENCE_DIR = None  # or Path("/path/to/reference_folder")
-REFERENCE_FILE = None  # or Path("/path/to/reference.dna") / Path("/path/to/reference.fa")
+REFERENCE_DIR = local_path("batch", "reference_dir")  # or Path("/path/to/reference_folder")
+REFERENCE_FILE = local_path("batch", "reference_file")  # or Path("/path/to/reference.dna") / Path("/path/to/reference.fa")
 
 # None creates a results subfolder beside the selected FASTQ, or inside FASTQ_DIR.
-OUTPUT_DIR = None  # or Path("/path/to/custom/results")
+OUTPUT_DIR = local_path("batch", "output_dir")  # or Path("/path/to/custom/results")
 OVERWRITE = False
 QC_ONLY = False
 BIN_SIZE_BP = 2000

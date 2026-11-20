@@ -21,6 +21,8 @@ from time import monotonic
 
 from Bio import SeqIO
 
+from local_settings import find_tool
+
 from batch_fastq_reader import align, fastq_stem, fingerprint, prepare_reference, write_igv_session
 
 READ_TYPES = ("nano-hq", "nano-raw", "nano-corr", "pacbio-hifi", "pacbio-corr", "pacbio-raw")
@@ -94,6 +96,9 @@ def show_progress(label: str):
 def run_command(command: list[str], log: Path, commands: list, *, stdout: Path | None = None) -> None:
     commands.append(command)
     tool = Path(command[0]).name
+    executable = command[0] if Path(command[0]).is_absolute() else find_tool(tool)
+    if not executable:
+        raise RuntimeError(f"{tool} is missing from PATH or local tool_dirs")
     label = f"Running {tool} (log: {log.name})"
     with show_progress(label), ExitStack() as files:
         errors = files.enter_context(log.open("a", encoding="utf-8"))
@@ -103,7 +108,7 @@ def run_command(command: list[str], log: Path, commands: list, *, stdout: Path |
         else:
             output = files.enter_context(stdout.open("wb"))
             diagnostics = subprocess.PIPE
-        with subprocess.Popen(command, stdout=output, stderr=diagnostics, text=True,
+        with subprocess.Popen([executable, *command[1:]], stdout=output, stderr=diagnostics, text=True,
                               encoding="utf-8", errors="replace") as process:
             stream = process.stdout if stdout is None else process.stderr
             assert stream is not None
@@ -191,9 +196,10 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
             raise ValueError("Inputs/settings changed; choose a new output folder instead of resuming")
         if saved.get("status") == "complete" and all((output / p).is_file() for p in saved.get("artifacts", [])):
             return json.loads((output / "summary.json").read_text())
-    for tool in ("flye", "minimap2", "samtools"):
-        if not shutil.which(tool):
-            raise RuntimeError(f"{tool} is missing from PATH; see ASSEMBLY.md for installation")
+    tools = {name: find_tool(name) for name in ("flye", "minimap2", "samtools")}
+    for tool, executable in tools.items():
+        if not executable:
+            raise RuntimeError(f"{tool} is missing from PATH or local tool_dirs; see ASSEMBLY.md for installation")
     progress(f"Output folder: {output}")
     with show_progress(f"Checking FASTQ: {fastq.name}"):
         qc = read_qc(fastq)
@@ -205,9 +211,9 @@ def run_assembly(fastq_file: str | Path, output_dir: str | Path | None = None,
     try:
         write_json(output / "read_qc.json", qc)
         versions = {}
-        for tool in ("flye", "minimap2", "samtools"):
+        for tool, executable in tools.items():
             option = "--version-only" if tool == "samtools" else "--version"
-            versions[tool] = subprocess.check_output([tool, option], text=True).splitlines()[0]
+            versions[tool] = subprocess.check_output([executable, option], text=True).splitlines()[0]
         flye_dir = output / "flye"
         retry_settings = saved.get("flye_retry")
         if retry_settings:

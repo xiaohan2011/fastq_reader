@@ -35,7 +35,8 @@ samtools --version-only
 ```
 
 In PyCharm, select this environment's Python interpreter. If tools are missing
-from the IDE's PATH, set `TOOL_DIRS` in the launcher to their `bin` directories.
+from the IDE's PATH, list their `bin` directories under `tool_dirs` in
+`.fastq-reader.local.json`.
 Keep the downloaded branch files together in one project folder. No data needs
 to be uploaded to GitHub or the cloud environment.
 
@@ -53,7 +54,8 @@ RESUME = False
 ```
 
 Then run the entire file. `.fastq`, `.fq`, and gzipped variants are supported.
-For Windows paths, use raw strings, e.g. `Path(r"C:\Users\you\data\reads.fastq.gz")`;
+For saved machine-specific paths, use the `assembly` section of
+`.fastq-reader.local.json` (see the README). For Windows paths in Python, use raw strings, e.g. `Path(r"C:\Users\you\data\reads.fastq.gz")`;
 when running in WSL, use Linux paths such as `/mnt/c/Users/you/data/reads.fastq.gz`.
 WSL network shares need to be mounted separately.
 

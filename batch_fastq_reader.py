@@ -23,6 +23,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from local_settings import find_tool
+
 FASTQ_EXTENSIONS = (".fastq.gz", ".fq.gz", ".fastq", ".fq")
 REFERENCE_EXTENSIONS = (".fasta", ".fa", ".fna", ".fas", ".dna")
 WORKFLOW_VERSION = 1
@@ -136,18 +138,19 @@ def prepare_reference(source: Path, destination: Path, identifier: str) -> None:
 
 
 def align(reference: Path, fastq: Path, bam: Path, log: Path, threads: int, preset: str = "map-ont") -> None:
-    for tool in ("minimap2", "samtools"):
-        if not shutil.which(tool):
-            raise RuntimeError(f"{tool} is missing from PATH; install it to enable alignment")
+    minimap2, samtools = (find_tool(name) for name in ("minimap2", "samtools"))
+    if not minimap2 or not samtools:
+        missing = "minimap2" if not minimap2 else "samtools"
+        raise RuntimeError(f"{missing} is missing from PATH or local tool_dirs; install it to enable alignment")
     with log.open("w") as errors:
         # Write stderr directly to disk to avoid a blocked stderr pipe on large jobs.
         mapper = subprocess.Popen(
-            ["minimap2", "-t", str(threads), "-ax", preset, str(reference), str(fastq)],
+            [minimap2, "-t", str(threads), "-ax", preset, str(reference), str(fastq)],
             stdout=subprocess.PIPE, stderr=errors,
         )
         try:
             sorter = subprocess.Popen(
-                ["samtools", "sort", "-@", str(max(1, threads - 1)), "-o", str(bam)],
+                [samtools, "sort", "-@", str(max(1, threads - 1)), "-o", str(bam)],
                 stdin=mapper.stdout, stderr=errors,
             )
             mapper.stdout.close()
@@ -161,8 +164,8 @@ def align(reference: Path, fastq: Path, bam: Path, log: Path, threads: int, pres
                 mapper.wait()
         if map_code or sort_code:
             raise RuntimeError(f"Alignment failed (minimap2={map_code}, samtools={sort_code}); see {log.name}")
-        subprocess.run(["samtools", "index", str(bam)], stderr=errors, check=True)
-        subprocess.run(["samtools", "quickcheck", str(bam)], stderr=errors, check=True)
+        subprocess.run([samtools, "index", str(bam)], stderr=errors, check=True)
+        subprocess.run([samtools, "quickcheck", str(bam)], stderr=errors, check=True)
 
 
 def fingerprint(path: Path) -> dict:
@@ -170,8 +173,16 @@ def fingerprint(path: Path) -> dict:
     return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
+def igv_resource_path(path: Path, session_dir: Path) -> str:
+    try:
+        return Path(os.path.relpath(path, session_dir)).as_posix()
+    except ValueError:
+        # Windows cannot make a relative path across drive letters or shares.
+        return path.as_posix() if path.is_absolute() else path.absolute().as_posix()
+
+
 def write_igv_session(reference: Path, bam: Path | list[Path], session: Path, *, overwrite: bool = False) -> Path:
-    """Create an IGV desktop XML session with paths relative to the session file."""
+    """Create an IGV desktop XML session with relative paths where the filesystem supports them."""
     bams = [bam] if isinstance(bam, Path) else bam
     if not bams:
         raise ValueError("An IGV session needs at least one BAM")
@@ -180,9 +191,10 @@ def write_igv_session(reference: Path, bam: Path | list[Path], session: Path, *,
             raise ValueError(f"Missing or empty IGV input: {path}")
     fasta_index = Path(str(reference) + ".fai")
     if not fasta_index.is_file() or fasta_index.stat().st_size == 0:
-        if not shutil.which("samtools"):
+        samtools = find_tool("samtools")
+        if not samtools:
             raise RuntimeError("samtools is required to index the IGV reference FASTA")
-        subprocess.run(["samtools", "faidx", str(reference)], check=True)
+        subprocess.run([samtools, "faidx", str(reference)], check=True)
     # Keep sessions users have already customized unless they request overwrite.
     if session.is_file() and session.stat().st_size > 0 and not overwrite:
         return session
@@ -191,14 +203,14 @@ def write_igv_session(reference: Path, bam: Path | list[Path], session: Path, *,
     if len(first_contig) < 2 or int(first_contig[1]) < 1:
         raise ValueError(f"Invalid FASTA index: {fasta_index}")
     root = ET.Element("Session", {
-        "genome": Path(os.path.relpath(reference, session.parent)).as_posix(),
+        "genome": igv_resource_path(reference, session.parent),
         "locus": f"{first_contig[0]}:1-{first_contig[1]}",
         "version": "8",
     })
     resources = ET.SubElement(root, "Resources")
     for alignment in bams:
         ET.SubElement(resources, "Resource", {
-            "path": Path(os.path.relpath(alignment, session.parent)).as_posix(),
+            "path": igv_resource_path(alignment, session.parent),
             "name": alignment.name.removesuffix("_sorted.bam"),
         })
     ET.indent(root, space="  ")
