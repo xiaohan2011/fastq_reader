@@ -53,13 +53,19 @@ until the reference folder has exactly one match for that ID.
 
 ### Installation
 
-Use Python 3.10 or newer:
+From a fresh checkout, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
+and run:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+uv python install 3.12
+uv sync --locked --group notebook
 ```
+
+This creates the local `.venv` from `uv.lock` and adds Jupyter support. Omit
+`--group notebook` for script use. If the checkout already has a working
+`.venv`, set `UV_PROJECT_ENVIRONMENT` to a separate environment path before
+syncing to preserve it. Run the commands below with the synced interpreter or
+prefix them with `uv run --locked`.
 
 Alignment additionally requires `minimap2` and `samtools` on `PATH`. For example,
 install them with `brew install minimap2 samtools` on macOS, or
@@ -95,8 +101,7 @@ python batch_fastq_reader.py --help
 
 ### Notebook
 
-Install `requirements-notebook.txt` instead of `requirements.txt` if you need
-Jupyter, then open `2_batch_fastq_reader.ipynb` from the repository folder. Set
+Sync with `uv sync --locked --group notebook`, then open `2_batch_fastq_reader.ipynb` from the repository folder. Set
 `FASTQ_DIR`, `REFERENCE_DIR`, and `OUTPUT_DIR` in the settings cell and run the
 notebook. It calls the same implementation as the command line.
 The processing cell reloads the Python module each time and prints its file path,
@@ -109,8 +114,9 @@ use `OVERWRITE = True` once, then restore it to `False`.
 ### PyCharm: editable settings and a normal Run button
 
 Open **`run_fastq_reader.py`** together with `batch_fastq_reader.py` in the same
-project. Edit the Settings section, select a Python **3.10 or newer** interpreter
-with `requirements.txt` installed, then right-click `run_fastq_reader.py` and
+project. Edit the Settings section, select the synced interpreter
+(`.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows for
+a default sync), then right-click `run_fastq_reader.py` and
 choose **Run**. No command-line arguments or Jupyter installation are required.
 The launcher supports both folder matching and explicit FASTQ/reference pairing.
 `OUTPUT_DIR = None` automatically creates a nested `results` folder. Minimap2
